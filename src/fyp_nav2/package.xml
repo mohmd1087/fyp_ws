@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>fyp_nav2</name>
+  <version>0.1.0</version>
+  <description>Navigation2 stack configuration and resources for FYP robot</description>
+
+  <maintainer email="muhammad@example.com">Muhammad</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- Build system -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Runtime dependencies -->
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>nav2_util</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>nav2_behavior_tree</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <!-- Use simulation clock -->
+  <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+
+</package>

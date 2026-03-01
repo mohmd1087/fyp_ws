@@ -1,0 +1,44 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    use_sim_time: true
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    diff_drive_controller:
+      type: diff_drive_controller/DiffDriveController
+
+diff_drive_controller:
+  ros__parameters:
+    # Original assignment
+    left_wheel_names:  ["Front_Left_Wheel_Joint", "Lower_Left_Wheel_Joint"]
+    right_wheel_names: ["Front_Right_Wheel_Joint", "Lower_Right_Wheel_Joint"]
+
+    # YOU MUST set these for your robot
+    wheel_separation: 0.435    # meters (front wheel center-to-center, measured)
+    wheel_radius: 0.0675
+
+    use_stamped_vel: false
+    publish_rate: 50.0
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    enable_odom_tf: true     # ENABLED for testing (disable EKF first)
+    use_sim_time: true
+
+    cmd_vel_timeout: 0.5
+
+    # Velocity limits to prevent oversteering
+    linear.x.has_velocity_limits: true
+    linear.x.max_velocity: 0.3          # m/s (reduced from unlimited)
+    linear.x.min_velocity: -0.3
+    linear.x.has_acceleration_limits: true
+    linear.x.max_acceleration: 0.5      # m/s^2 (gentle acceleration)
+    linear.x.min_acceleration: -0.5
+
+    angular.z.has_velocity_limits: true
+    angular.z.max_velocity: 0.5         # rad/s (reduced to prevent oversteering)
+    angular.z.min_velocity: -0.5
+    angular.z.has_acceleration_limits: true
+    angular.z.max_acceleration: 0.5     # rad/s^2 (gentle turning)
+    angular.z.min_acceleration: -0.5

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>fyp_description</name>
+  <version>0.0.1</version>
+  <description>Robot description (URDF + meshes) for FYP</description>
+
+  <maintainer email="muhammad@todo.todo">muhammad</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- Build dependency -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Runtime dependencies -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <!-- This export tells ROS2 where the package's resources are located
+       for Gazebo simulations (URDF meshes, etc). -->
+  <export>
+    <build_type>ament_cmake</build_type>
+
+    <!-- 
+      Add your Gazebo model path so Gazebo can find meshes, URDFs, and other
+      resources. ${prefix} expands to the install/share/fyp_description
+      directory, and using ${prefix}/.. lets Gazebo find package:// URIs. 
+    -->
+    <gazebo_ros gazebo_model_path="${prefix}/.."/>
+  </export>
+</package>

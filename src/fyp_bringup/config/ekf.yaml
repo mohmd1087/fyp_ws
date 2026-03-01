@@ -1,0 +1,71 @@
+# robot_localization EKF configuration for IMU + wheel odometry fusion
+# Produces smooth odometry for Nav2: odom -> base_footprint TF
+
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # Frequency of filter output
+    frequency: 30.0
+
+    # Sensor timeout - if no data for this long, predict only
+    sensor_timeout: 0.1
+
+    # Frame configuration (must match Nav2 + TF tree)
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint    # Nav2 uses base_footprint
+    world_frame: odom                   # Local EKF uses odom as world frame
+
+    # TF publishing - EKF will publish odom -> base_footprint
+    publish_tf: true
+    publish_acceleration: false
+
+    # 2D mode for planar robot (ignores roll, pitch, Z)
+    two_d_mode: true
+
+    # ============================================
+    # ODOM0: Wheel odometry from diff_drive_controller
+    # Only fuse linear velocities - wheel yaw rate is unreliable for skid-steer
+    # ============================================
+    odom0: /odom
+    odom0_config: [false, false, false,   # x, y, z position
+                   false, false, false,   # roll, pitch, yaw orientation
+                   true,  true,  false,   # vx, vy, vz velocity (fuse vx, vy only)
+                   false, false, false,   # vroll, vpitch, vyaw - DISABLED for skid-steer
+                   false, false, false]   # ax, ay, az acceleration
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # ============================================
+    # IMU0: IMU sensor - PRIMARY source for yaw/heading
+    # Trust IMU for all rotation since wheel odom drifts
+    # ============================================
+    imu0: /imu
+    imu0_config: [false, false, false,   # x, y, z (IMU doesn't provide position)
+                  false, false, true,    # roll, pitch, yaw (fuse yaw orientation)
+                  false, false, false,   # vx, vy, vz (IMU doesn't provide linear velocity)
+                  false, false, true,    # vroll, vpitch, vyaw (fuse yaw rate from IMU)
+                  false, false, false]   # ax, ay, az (don't fuse accel for 2D)
+    imu0_differential: false
+    imu0_relative: true                  # Use relative yaw to avoid absolute heading issues
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+
+    # Process noise covariance (tune if needed)
+    process_noise_covariance: [0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.06,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.04,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.02,  0.0,   0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,
+                               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.015]

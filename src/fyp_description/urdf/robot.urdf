@@ -1,0 +1,360 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="fyp_robot">
+
+  <!-- Dummy root to avoid KDL "root link has inertia" warning -->
+  <link name="base_footprint"/>
+
+  <!-- +90° yaw: maps cmd_vel +X to robot's physical +Y (wheel axis is along X) -->
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+  </joint>
+
+  <!-- ===================== -->
+  <!-- CHASSIS (base_link)   -->
+  <!-- ===================== -->
+  <link name="base_link">
+    <!-- IMPORTANT: Center COM close to the chassis center to prevent tipping -->
+    <inertial>
+      <origin xyz="0.0 0.0 0.10" rpy="0 0 0"/>
+      <mass value="5.3118"/>
+      <inertia ixx="0.10" ixy="0.0" ixz="0.0"
+               iyy="0.10" iyz="0.0"
+               izz="0.15"/>
+    </inertial>
+
+    <!-- Visual keeps your STL -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/base_link.STL"/>
+      </geometry>
+      <material name="base_gray">
+        <color rgba="0.75294 0.75294 0.75294 1"/>
+      </material>
+    </visual>
+
+    <!-- Collision uses a simple box (stable + fast) -->
+    <collision>
+      <!-- Adjust xyz/size to match your chassis dimensions -->
+      <origin xyz="0 0 0.1475" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.45 0.32 0.16"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- ===================== -->
+  <!-- WHEELS (4)            -->
+  <!-- ===================== -->
+
+  <link name="Front_Left_Wheel">
+    <inertial>
+      <origin xyz="2.31233851510915E-11 -2.85785128575911E-07 0.0160218012444127" rpy="0 0 0"/>
+      <mass value="0.407917904048073"/>
+      <inertia ixx="0.000577300644358977" ixy="-5.22853787175703E-14" ixz="9.40890624968697E-14"
+               iyy="0.000578042343322791" iyz="-1.60915152131612E-09" izz="0.00108187291864029"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Front_Left_Wheel.STL"/>
+      </geometry>
+      <material name="wheel_blue">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1"/>
+      </material>
+    </visual>
+
+    <!-- Stable collision: cylinder (adjust radius/length to your wheel) -->
+    <collision>
+      <origin xyz="0 0 0.0675" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.0675" length="0.03"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="Front_Left_Wheel_Joint" type="continuous">
+    <origin xyz="-0.090042 -0.013811 0.1272" rpy="1.5708 0 -1.5708"/>
+    <parent link="base_link"/>
+    <child link="Front_Left_Wheel"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="0.2" friction="0.0"/>
+  </joint>
+
+  <link name="Front_Right_Wheel">
+    <inertial>
+      <origin xyz="2.31233313746637E-11 -2.85785128562033E-07 0.0160218012444127" rpy="0 0 0"/>
+      <mass value="0.407917904048074"/>
+      <inertia ixx="0.000577300644358978" ixy="-5.22854464802061E-14" ixz="9.40889297650489E-14"
+               iyy="0.000578042343322792" iyz="-1.60915152131323E-09" izz="0.00108187291864029"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Front_Right_Wheel.STL"/>
+      </geometry>
+      <material name="wheel_blue2">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1"/>
+      </material>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0.0675" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.0675" length="0.03"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="Front_Right_Wheel_Joint" type="continuous">
+    <origin xyz="0.30771 -0.013811 0.1272" rpy="1.5708 0 1.5708"/>
+    <parent link="base_link"/>
+    <child link="Front_Right_Wheel"/>
+    <axis xyz="0 0 -1"/>
+    <dynamics damping="0.2" friction="0.0"/>
+  </joint>
+
+  <link name="Lower_Left_Wheel">
+    <inertial>
+      <origin xyz="2.31232255565317E-11 -2.85785128548155E-07 0.0160218012444127" rpy="0 0 0"/>
+      <mass value="0.407917904048073"/>
+      <inertia ixx="0.000577300644358977" ixy="-5.22854058226246E-14" ixz="9.40891041036782E-14"
+               iyy="0.000578042343322791" iyz="-1.60915152103731E-09" izz="0.00108187291864029"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Lower_Left_Wheel.STL"/>
+      </geometry>
+      <material name="wheel_blue3">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1"/>
+      </material>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0.0675" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.0675" length="0.03"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="Lower_Left_Wheel_Joint" type="continuous">
+    <origin xyz="-0.090042 -0.27894 0.1272" rpy="1.5708 0 -1.5708"/>
+    <parent link="base_link"/>
+    <child link="Lower_Left_Wheel"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="0.2" friction="0.0"/>
+  </joint>
+
+  <link name="Lower_Right_Wheel">
+    <inertial>
+      <origin xyz="2.3123E-11 -2.8579E-07 0.016022" rpy="0 0 0"/>
+      <mass value="0.40792"/>
+      <inertia ixx="0.0005773" ixy="-5.2285E-14" ixz="9.4089E-14"
+               iyy="0.00057804" iyz="-1.6092E-09" izz="0.0010819"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Lower_Right_Wheel.STL"/>
+      </geometry>
+      <material name="wheel_blue4">
+        <color rgba="0.79216 0.81961 0.93333 1"/>
+      </material>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0.0675" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.0675" length="0.03"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="Lower_Right_Wheel_Joint" type="continuous">
+    <origin xyz="0.30771 -0.27894 0.1272" rpy="1.5708 0 1.5708"/>
+    <parent link="base_link"/>
+    <child link="Lower_Right_Wheel"/>
+    <axis xyz="0 0 -1"/>
+    <dynamics damping="0.2" friction="0.0"/>
+  </joint>
+
+  <!-- Wheel friction (helps stability / reduces slipping) -->
+  <gazebo reference="Front_Left_Wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+  </gazebo>
+  <gazebo reference="Front_Right_Wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+  </gazebo>
+  <gazebo reference="Lower_Left_Wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+  </gazebo>
+  <gazebo reference="Lower_Right_Wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+  </gazebo>
+
+  <!-- ===================== -->
+  <!-- ros2_control + Gazebo -->
+  <!-- ===================== -->
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+
+    <joint name="Front_Left_Wheel_Joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="Lower_Left_Wheel_Joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="Front_Right_Wheel_Joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="Lower_Right_Wheel_Joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+      <parameters>/home/muhammad/fyp_ws/install/fyp_bringup/share/fyp_bringup/config/controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+
+
+  <!-- ===================== -->
+  <!-- DEPTH CAMERA          -->
+  <!-- ===================== -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 0.05 0.05"/>
+      </geometry>
+      <material name="black">
+        <color rgba="0 0 0 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 0.05 0.05"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.00004" ixy="0" ixz="0" iyy="0.00004" iyz="0" izz="0.00004"/>
+    </inertial>
+  </link>
+
+  <!-- Camera at front of robot, looking along base_link +Y (physical forward) -->
+  <!-- yaw +90° makes camera_link +X point along base_link +Y (forward) -->
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.11 0.30 0.20" rpy="0 0 1.5708"/>
+  </joint>
+
+  <!-- Scan frame: same position as camera, but aligned with base_footprint -->
+  <!-- Used for laser scan output so obstacles project correctly -->
+  <link name="scan_frame"/>
+  <joint name="scan_frame_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="scan_frame"/>
+    <origin xyz="0.30 0.11 0.20" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Optical frame: Z forward, X right, Y down (standard ROS convention) -->
+ <link name="camera_depth_optical_frame"/>
+
+<joint name="camera_depth_optical_joint" type="fixed">
+  <parent link="camera_link"/>
+  <child link="camera_depth_optical_frame"/>
+  <!-- optical frame: Z forward, X right, Y down -->
+  <origin xyz="0 0 0" rpy="-1.5708 0 1.5708"/>
+</joint>
+
+
+  <!-- IMU link for real robot IMU mounting -->
+  <link name="imu_link"/>
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <!-- Adjust this to match your actual IMU mounting position -->
+    <origin xyz="0.1 0 0.15" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Gazebo depth camera sensor -->
+  <gazebo reference="camera_link">
+    <sensor name="depth_camera" type="depth_camera">
+      <always_on>true</always_on>
+      <update_rate>20</update_rate>
+      <camera>
+        <horizontal_fov>1.396</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R_FLOAT32</format>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <far>10.0</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </camera>
+      <topic>camera/depth</topic>
+      <gz_frame_id>camera_link</gz_frame_id>
+    </sensor>
+  </gazebo>
+
+  <!-- IMU sensor for odometry fusion -->
+  <gazebo reference="base_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>true</always_on>
+      <update_rate>100</update_rate>
+      <topic>imu</topic>
+      <gz_frame_id>base_link</gz_frame_id>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.0001</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.0001</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.0001</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.001</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.001</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.001</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+  </gazebo>
+
+</robot>

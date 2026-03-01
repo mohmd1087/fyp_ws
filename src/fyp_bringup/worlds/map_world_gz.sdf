@@ -1,0 +1,177 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <world name="default">
+    <!-- Physics -->
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- Plugins for gz-sim -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <!-- Lighting -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Ground Plane -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ==================== WALLS ==================== -->
+    <!-- Map: 86x16 pixels, 0.5m resolution, origin (-5,-5) -->
+    <!-- World bounds: x from -5 to 38, y from -5 to 3 -->
+    <!-- Vertical corridor opening at x = 13 to 19.5 -->
+
+    <!-- Perimeter walls -->
+    <!-- Bottom wall (y = -5) -->
+    <model name="wall_bottom">
+      <static>true</static>
+      <pose>16.5 -5.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>43.0 0.1 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>43.0 0.1 2.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Top wall (y = 3) -->
+    <model name="wall_top">
+      <static>true</static>
+      <pose>16.5 3.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>43.0 0.1 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>43.0 0.1 2.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Left wall (x = -5) -->
+    <model name="wall_left">
+      <static>true</static>
+      <pose>-5.0 -1.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 8.0 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 8.0 2.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Right wall (x = 38) -->
+    <model name="wall_right">
+      <static>true</static>
+      <pose>38.0 -1.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 8.0 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 8.0 2.5</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Left obstacle block (x = -5 to 13, y = -5 to 0.5) -->
+    <!-- Creates the left side of the vertical corridor -->
+    <model name="obstacle_left">
+      <static>true</static>
+      <pose>4.0 -2.25 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>18.0 5.5 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>18.0 5.5 2.5</size></box></geometry>
+          <material>
+            <ambient>0.6 0.4 0.3 1</ambient>
+            <diffuse>0.7 0.5 0.4 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Right obstacle block (x = 19.5 to 38, y = -5 to 0.5) -->
+    <!-- Creates the right side of the vertical corridor -->
+    <model name="obstacle_right">
+      <static>true</static>
+      <pose>28.75 -2.25 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>18.5 5.5 2.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>18.5 5.5 2.5</size></box></geometry>
+          <material>
+            <ambient>0.6 0.4 0.3 1</ambient>
+            <diffuse>0.7 0.5 0.4 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

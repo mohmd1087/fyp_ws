@@ -1,0 +1,330 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simulation URDF for Gazebo (Ignition/Fortress)
+     Based on new_robot.urdf — adds:
+       - Continuous wheel joints (physics requires rotating joints)
+       - Gazebo DiffDrive plugin  → /wheel/odometry, /tf (odom→base_footprint)
+       - Gazebo IMU sensor        → /imu/data
+       - Gazebo depth camera      → /camera/depth, /camera/camera_info
+     Topics match real robot exactly so EKF + Nav2 configs are reused unchanged.
+-->
+<robot name="URDF">
+  <!-- base_footprint: ground-projected virtual frame (Nav2 / EKF root) -->
+  <link name="base_footprint"/>
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.0152622090341073 2.56608773479688E-05 0.340155949397112"
+        rpy="0 0 0" />
+      <mass value="26.5054805614528" />
+      <inertia
+        ixx="0.621905792312847"
+        ixy="1.75868724918625E-06"
+        ixz="-9.3140526505306E-05"
+        iyy="0.619709266364052"
+        iyz="-1.5301943601009E-09"
+        izz="0.761342270387948" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/base_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- ==================== WHEELS ==================== -->
+  <!-- Changed from fixed → continuous for physics simulation -->
+
+  <link name="Front_Left_Wheel">
+    <inertial>
+      <origin
+        xyz="-1.65811249175363E-07 0.00842329502511818 -7.19923407832557E-07"
+        rpy="0 0 0" />
+      <mass value="1.24660668719815" />
+      <inertia
+        ixx="0.00160785981291804"
+        ixy="-2.85289426666511E-09"
+        ixz="4.38579002002994E-07"
+        iyy="0.00301627129247734"
+        iyz="-1.23880381920975E-08"
+        izz="0.00160966377370571" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Front_Left_Wheel.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Front_Left_Wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="Front_Left_Wheel_Joint" type="continuous">
+    <origin xyz="0.13257 0.2175 0.024" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="Front_Left_Wheel" />
+    <axis xyz="0 1 0" />
+  </joint>
+
+  <link name="Front_Right_Wheel">
+    <inertial>
+      <origin
+        xyz="1.65811249286385E-07 -0.00842329502511807 -7.19923407860312E-07"
+        rpy="0 0 0" />
+      <mass value="1.24660668719815" />
+      <inertia
+        ixx="0.00160785981291803"
+        ixy="-2.85289430643748E-09"
+        ixz="-4.38579002002945E-07"
+        iyy="0.00301627129247734"
+        iyz="1.23880382016781E-08"
+        izz="0.0016096637737057" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Front_Right_Wheel.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.647058823529412 0.619607843137255 0.588235294117647 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Front_Right_Wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="Front_Right_Wheel_Joint" type="continuous">
+    <origin xyz="0.13257 -0.2175 0.024" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="Front_Right_Wheel" />
+    <axis xyz="0 1 0" />
+  </joint>
+
+  <link name="Lower_Left_Wheel">
+    <inertial>
+      <origin
+        xyz="-1.65811249218731E-07 0.00842329502511807 -7.19923407832557E-07"
+        rpy="0 0 0" />
+      <mass value="1.24660668719815" />
+      <inertia
+        ixx="0.00160785981291804"
+        ixy="-2.85289428634376E-09"
+        ixz="4.38579002003007E-07"
+        iyy="0.00301627129247734"
+        iyz="-1.23880381920808E-08"
+        izz="0.00160966377370571" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Lower_Left_Wheel.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Lower_Left_Wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="Lower_Left_Wheel_Joint" type="continuous">
+    <origin xyz="-0.13257 0.215 0.024" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="Lower_Left_Wheel" />
+    <axis xyz="0 1 0" />
+  </joint>
+
+  <link name="Lower_Right_Wheel">
+    <inertial>
+      <origin
+        xyz="1.65811248963726E-07 -0.00842329502511806 -7.19923407888068E-07"
+        rpy="0 0 0" />
+      <mass value="1.24660668719815" />
+      <inertia
+        ixx="0.00160785981291803"
+        ixy="-2.85289424654725E-09"
+        ixz="-4.38579002003012E-07"
+        iyy="0.00301627129247734"
+        iyz="1.23880382016681E-08"
+        izz="0.0016096637737057" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Lower_Right_Wheel.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://fyp_description/meshes/Lower_Right_Wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="Lower_Right_Wheel_Joint" type="continuous">
+    <origin xyz="-0.13257 -0.215 0.024" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="Lower_Right_Wheel" />
+    <axis xyz="0 1 0" />
+  </joint>
+
+  <!-- ========== SENSOR FRAMES ========== -->
+
+  <!-- Camera: front-center of chassis, top height -->
+  <link name="camera_link">
+    <visual>
+      <geometry><box size="0.05 0.05 0.05"/></geometry>
+      <material name="camera_black">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.14 0.0 0.34" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Camera optical frame: Z-forward, X-right, Y-down (REP-103 optical) -->
+  <link name="camera_depth_optical_frame"/>
+  <joint name="camera_depth_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_depth_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <!-- Scan frame: body-aligned at camera position (for depthimage_to_laserscan) -->
+  <link name="scan_frame"/>
+  <joint name="scan_frame_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="scan_frame"/>
+    <origin xyz="0.14 0.0 0.34" rpy="0 0 0"/>
+  </joint>
+
+  <!-- IMU: mounted flat, aligned with robot body -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0.0 0.0 0.15" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========== GAZEBO PLUGINS ========== -->
+
+  <!-- Wheel friction (applied per-wheel) -->
+  <gazebo reference="Front_Left_Wheel">
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+  </gazebo>
+  <gazebo reference="Front_Right_Wheel">
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+  </gazebo>
+  <gazebo reference="Lower_Left_Wheel">
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+  </gazebo>
+  <gazebo reference="Lower_Right_Wheel">
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+  </gazebo>
+
+  <!-- JointStatePublisher plugin:
+       Publishes /joint_states for all continuous joints so
+       robot_state_publisher can broadcast wheel TFs to RViz.
+  -->
+  <gazebo>
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+      <joint_name>Front_Left_Wheel_Joint</joint_name>
+      <joint_name>Front_Right_Wheel_Joint</joint_name>
+      <joint_name>Lower_Left_Wheel_Joint</joint_name>
+      <joint_name>Lower_Right_Wheel_Joint</joint_name>
+    </plugin>
+  </gazebo>
+
+  <!-- DiffDrive plugin:
+       Subscribes to /cmd_vel (Twist)
+       Publishes  /wheel/odometry (Odometry) — matches real robot topic
+       Publishes  /tf (odom → base_footprint) — replaces controller_manager
+  -->
+  <gazebo>
+    <plugin filename="gz-sim-diff-drive-system"
+            name="gz::sim::systems::DiffDrive">
+      <left_joint>Front_Left_Wheel_Joint</left_joint>
+      <left_joint>Lower_Left_Wheel_Joint</left_joint>
+      <right_joint>Front_Right_Wheel_Joint</right_joint>
+      <right_joint>Lower_Right_Wheel_Joint</right_joint>
+      <wheel_separation>0.435</wheel_separation>
+      <wheel_radius>0.0675</wheel_radius>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <topic>cmd_vel</topic>
+      <odom_topic>wheel/odometry</odom_topic>
+      <tf_topic>tf</tf_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_footprint</child_frame_id>
+    </plugin>
+  </gazebo>
+
+  <!-- IMU sensor at imu_link → /imu/data (matches real robot topic) -->
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>1</always_on>
+      <update_rate>50</update_rate>
+      <topic>imu/data</topic>
+      <gz_frame_id>imu_link</gz_frame_id>
+    </sensor>
+  </gazebo>
+
+  <!-- Depth camera at camera_link → /camera/depth, /camera/camera_info -->
+  <gazebo reference="camera_link">
+    <sensor name="depth_camera" type="depth_camera">
+      <always_on>1</always_on>
+      <update_rate>30</update_rate>
+      <camera>
+        <horizontal_fov>1.02974</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R_FLOAT32</format>
+        </image>
+        <clip>
+          <near>0.3</near>
+          <far>8.0</far>
+        </clip>
+      </camera>
+      <topic>camera/depth</topic>
+      <gz_frame_id>camera_depth_optical_frame</gz_frame_id>
+    </sensor>
+  </gazebo>
+
+</robot>

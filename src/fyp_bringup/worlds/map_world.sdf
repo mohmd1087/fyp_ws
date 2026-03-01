@@ -1,0 +1,151 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="default">
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <!-- Ground plane -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Sun -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.5 0.5 0.5 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Map bounds: x=-5 to 38, y=-5 to 3 (86x16 pixels, 0.5m resolution, origin at -5,-5) -->
+
+    <!-- OUTER WALLS -->
+    <!-- Bottom wall (y=-5) -->
+    <model name="wall_south">
+      <static>true</static>
+      <pose>16.5 -5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>43 0.2 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>43 0.2 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- Top wall (y=3) -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>16.5 3 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>43 0.2 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>43 0.2 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- Left wall (x=-5) -->
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-5 -1 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 8 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 8 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- Right wall (x=38) -->
+    <model name="wall_east">
+      <static>true</static>
+      <pose>38 -1 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 8 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 8 1</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- HORIZONTAL DIVIDER at y=0 (with corridor gap at x=13 to x=19.5) -->
+    <!-- Left section: x=-5 to x=13 -->
+    <model name="divider_left">
+      <static>true</static>
+      <pose>4 0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>18 0.2 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>18 0.2 1</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- Right section: x=19.5 to x=38 -->
+    <model name="divider_right">
+      <static>true</static>
+      <pose>28.75 0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>18.5 0.2 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>18.5 0.2 1</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- CORRIDOR WALLS (vertical walls forming the corridor) -->
+    <!-- Left corridor wall at x=13 -->
+    <model name="corridor_west">
+      <static>true</static>
+      <pose>13 -2.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 5 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 5 1</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- Right corridor wall at x=19.5 -->
+    <model name="corridor_east">
+      <static>true</static>
+      <pose>19.5 -2.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 5 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 5 1</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- OBSTACLES in upper room matching map obstacles at y=2.5 -->
+    <!-- Obstacle at x=7-8 -->
+    <model name="obs1">
+      <static>true</static>
+      <pose>7.5 2.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1 0.3 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1 0.3 1</size></box></geometry>
+          <material><ambient>0.8 0.3 0.3 1</ambient></material></visual>
+      </link>
+    </model>
+
+    <!-- Obstacle block around x=8-13 at y=0.5 -->
+    <model name="obs2">
+      <static>true</static>
+      <pose>10.5 0.7 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>5 0.5 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>5 0.5 1</size></box></geometry>
+          <material><ambient>0.3 0.3 0.8 1</ambient></material></visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>
