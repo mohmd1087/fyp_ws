@@ -1,0 +1,42 @@
+{
+  "order_id": "LK-37565D8C98",
+  "created_at_unix": 1772691280,
+  "restaurant": {
+    "name": "Saffron Garden",
+    "location": "Main Boulevard, Lahore"
+  },
+  "customer": {
+    "name": null,
+    "phone": null
+  },
+  "order_type": "dine_in",
+  "dine_in": {
+    "party_size": 2,
+    "table_number": null
+  },
+  "preferences": {
+    "spice_level": "medium",
+    "allergies": null,
+    "notes": null
+  },
+  "items": [
+    {
+      "item_id": "chicken_tikka",
+      "name": "Chicken Tikka",
+      "unit_price": 720,
+      "qty": 1,
+      "modifications": "medium spice",
+      "allergens": [],
+      "category": "bbq",
+      "line_total": 720
+    }
+  ],
+  "totals": {
+    "subtotal": 720,
+    "service_charge": 72,
+    "service_rate": 0.1,
+    "total": 792,
+    "currency": "PKR"
+  },
+  "status": "confirmed"
+}

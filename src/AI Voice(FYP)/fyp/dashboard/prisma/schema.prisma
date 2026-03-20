@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Staff {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(STAFF)
+  createdAt    DateTime @default(now())
+}
+
+enum Role {
+  ADMIN
+  STAFF
+}
+
+model Order {
+  id          String      @id // Agent-generated "LK-XXXXXXXXXX"
+  tableNumber String?
+  orderType   OrderType
+  status      OrderStatus @default(PENDING)
+  customer    Json // {name, phone}
+  dineIn      Json? // {party_size, table_number}
+  preferences Json // {spice_level, allergies, notes}
+  items       Json // [{name, qty, unit_price, modifications, ...}]
+  totals      Json // {subtotal, service_charge, total, currency}
+  rawPayload  Json // full agent JSON for debugging
+  createdAt   DateTime
+  updatedAt   DateTime    @updatedAt
+
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+enum OrderType {
+  dine_in
+  takeaway
+  delivery
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+}
