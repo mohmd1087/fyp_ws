@@ -16,7 +16,7 @@ install(
 
 # Install Python scripts
 install(
-  PROGRAMS scripts/pose_sync.py
+  PROGRAMS scripts/pose_sync.py scripts/waiter_orchestrator.py scripts/obstacle_gate_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

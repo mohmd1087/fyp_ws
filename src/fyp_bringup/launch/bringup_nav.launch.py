@@ -40,9 +40,10 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
     mode = LaunchConfiguration('mode', default='nav')
     map_yaml = LaunchConfiguration('map')
+    planner = LaunchConfiguration('planner', default='dstar')
 
     # Default map path
-    default_map = os.path.join(nav2_pkg, 'maps', 'maze.yaml')
+    default_map = os.path.join(bringup_pkg, 'maps', 'my_map.yaml')
 
     # ========================================
     # 1. Hardware Bringup
@@ -146,7 +147,7 @@ def generate_launch_description():
 
     # Navigation launch (delayed further for localization to start)
     navigation_launch = TimerAction(
-        period=8.0,
+        period=18.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -154,9 +155,33 @@ def generate_launch_description():
                 ),
                 launch_arguments={
                     'use_sim_time': use_sim_time,
+                    'planner': planner,
                 }.items(),
                 condition=IfCondition(
                     PythonExpression(["'", mode, "' == 'nav'"])
+                )
+            )
+        ]
+    )
+
+    # ========================================
+    # 4c. D* Lite planner node (nav mode only, delayed 9 seconds)
+    # ========================================
+    # Only launched when planner:=dstar (default).
+    # When planner:=navfn this section is skipped and Nav2's own planner_server runs.
+    dstar_pkg_dir = get_package_share_directory('fyp_dstar_lite')
+    dstar_launch = TimerAction(
+        period=15.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(dstar_pkg_dir, 'launch', 'dstar_planner.launch.py')
+                ),
+                launch_arguments={
+                    'use_sim_time': use_sim_time,
+                }.items(),
+                condition=IfCondition(
+                    PythonExpression(["'", planner, "' == 'dstar' and '", mode, "' == 'nav'"])
                 )
             )
         ]
@@ -201,6 +226,11 @@ def generate_launch_description():
             default_value=default_map,
             description='Full path to map YAML file (for nav mode)'
         ),
+        DeclareLaunchArgument(
+            'planner',
+            default_value='dstar',
+            description='Global planner: "dstar" (D* Lite) or "navfn" (NavfnPlanner/A*)'
+        ),
 
         # Launch components
         hardware_bringup,
@@ -209,5 +239,6 @@ def generate_launch_description():
         slam_launch,
         localization_launch,
         navigation_launch,
+        dstar_launch,
         rviz_node,
     ])

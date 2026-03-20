@@ -1,0 +1,26 @@
+# D* Lite (default)
+ros2 launch fyp_bringup sim_nav.launch.py
+
+# NavfnPlanner / A* (original)
+ros2 launch fyp_bringup sim_nav.launch.py planner:=navfn
+
+
+source ~/fyp_ws/install/setup.bash
+
+ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav map:=/path/to/your/map.yaml
+
+
+source ~/fyp_ws/install/setup.bash
+ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav map:=$(ros2 pkg prefix fyp_bringup)/share/fyp_bringup/maps/my_map.yaml
+
+source ~/fyp_ws/install/setup.bash
+ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav map:=/home/muhammad/fyp_ws/src/fyp_bringup/maps/my_map.yaml
+
+
+ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav map:=/home/muhammad/fyp_ws/src/fyp_bringup/maps/my_map.yaml planner:=navfn
+
+
+source ~/fyp_ws/install/setup.bash
+
+
+

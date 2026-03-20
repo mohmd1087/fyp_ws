@@ -84,7 +84,7 @@ def generate_launch_description():
             'pf_err': 0.05,
             'pf_z': 0.99,
 
-            # Initial pose (can be set via RViz or topic)
+            # Initial pose (set via RViz 2D Pose Estimate, or set_initial_pose: True with coords)
             'set_initial_pose': False,
             'initial_pose': {
                 'x': 0.0,

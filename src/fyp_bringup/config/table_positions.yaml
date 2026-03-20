@@ -1,0 +1,17 @@
+# Table positions in the map frame (measure from RViz using "Publish Point")
+# yaw is in radians (0 = facing +X, 1.57 = facing +Y, 3.14 = facing -X)
+
+home:
+  x: 0.0
+  y: 0.0
+  yaw: 0.0
+
+tables:
+  table-1:
+    x: 2.5
+    y: 1.0
+    yaw: 1.57
+  table-2:
+    x: 2.5
+    y: -1.0
+    yaw: -1.57

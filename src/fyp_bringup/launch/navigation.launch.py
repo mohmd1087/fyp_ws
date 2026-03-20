@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Navigation launch file for full Nav2 stack
+Navigation launch file for full Nav2 stack.
 Launches all navigation components: planner, controller, behaviors, etc.
 
 Usage:
-ros2 launch fyp_bringup navigation.launch.py
+  ros2 launch fyp_bringup navigation.launch.py                   # D* Lite (default)
+  ros2 launch fyp_bringup navigation.launch.py planner:=navfn   # NavfnPlanner (A*)
+  ros2 launch fyp_bringup navigation.launch.py planner:=dstar   # D* Lite (explicit)
 
 Prerequisites:
 - Localization must be running (AMCL with map)
@@ -14,29 +16,20 @@ Prerequisites:
 
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
-from launch_ros.actions import LifecycleNode
+from launch_ros.actions import Node, LifecycleNode
 from ament_index_python.packages import get_package_share_directory
 
 
-def generate_launch_description():
-    # Package directories
-    nav2_pkg = get_package_share_directory('fyp_nav2')
-
-    # Launch arguments
-    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
-    autostart = LaunchConfiguration('autostart', default='true')
+def _create_nav_nodes(context, *args, **kwargs):
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    autostart = LaunchConfiguration('autostart')
     params_file = LaunchConfiguration('params_file')
-
-    # Default params file
-    default_params = os.path.join(nav2_pkg, 'params', 'nav2_params_real.yaml')
 
     # ========================================
     # Controller Server
     # ========================================
-    # Executes the local trajectory (follows path from planner)
     controller_server = LifecycleNode(
         package='nav2_controller',
         executable='controller_server',
@@ -45,27 +38,13 @@ def generate_launch_description():
         output='screen',
         parameters=[params_file, {'use_sim_time': use_sim_time}],
         remappings=[
-            ('cmd_vel', '/cmd_vel'),
-        ]
-    )
-
-    # ========================================
-    # Planner Server
-    # ========================================
-    # Computes global path from current position to goal
-    planner_server = LifecycleNode(
-        package='nav2_planner',
-        executable='planner_server',
-        name='planner_server',
-        namespace='',
-        output='screen',
-        parameters=[params_file, {'use_sim_time': use_sim_time}],
+            ('cmd_vel', '/cmd_vel_nav'),
+        ],
     )
 
     # ========================================
     # Behavior Server
     # ========================================
-    # Executes recovery behaviors (spin, backup, wait)
     behavior_server = LifecycleNode(
         package='nav2_behaviors',
         executable='behavior_server',
@@ -78,7 +57,6 @@ def generate_launch_description():
     # ========================================
     # BT Navigator
     # ========================================
-    # Behavior tree navigator - orchestrates navigation
     bt_navigator = LifecycleNode(
         package='nav2_bt_navigator',
         executable='bt_navigator',
@@ -89,22 +67,8 @@ def generate_launch_description():
     )
 
     # ========================================
-    # Smoother Server
-    # ========================================
-    # Smooths global path from planner (called by BT SmoothPath node)
-    smoother_server = LifecycleNode(
-        package='nav2_smoother',
-        executable='smoother_server',
-        name='smoother_server',
-        namespace='',
-        output='screen',
-        parameters=[params_file, {'use_sim_time': use_sim_time}],
-    )
-
-    # ========================================
     # Waypoint Follower
     # ========================================
-    # Follows a series of waypoints
     waypoint_follower = LifecycleNode(
         package='nav2_waypoint_follower',
         executable='waypoint_follower',
@@ -117,7 +81,6 @@ def generate_launch_description():
     # ========================================
     # Velocity Smoother
     # ========================================
-    # Smooths velocity commands for better motion
     velocity_smoother = LifecycleNode(
         package='nav2_velocity_smoother',
         executable='velocity_smoother',
@@ -127,14 +90,54 @@ def generate_launch_description():
         parameters=[params_file, {'use_sim_time': use_sim_time}],
         remappings=[
             ('cmd_vel', '/cmd_vel_nav'),
-            ('cmd_vel_smoothed', '/cmd_vel'),
-        ]
+            ('cmd_vel_smoothed', '/cmd_vel_smoothed'),
+        ],
     )
+
+    obstacle_gate = Node(
+        package='fyp_bringup',
+        executable='obstacle_gate_node.py',
+        name='obstacle_gate',
+        output='screen',
+        parameters=[{
+            'stop_distance': 0.5,
+            'cone_angle': 0.524,
+            'use_sim_time': use_sim_time,
+        }],
+        remappings=[
+            ('cmd_vel_in', '/cmd_vel_smoothed'),
+            ('cmd_vel_out', '/cmd_vel'),
+            ('scan', '/scan'),
+        ],
+    )
+
+    # ========================================
+    # Planner Server (always launched)
+    # ========================================
+    # In D* Lite mode, planner_server still provides the global_costmap
+    # (/global_costmap/costmap) that D* Lite subscribes to.
+    # The ComputePathToPose action is handled by dstar_planner_node instead.
+    # In navfn mode, planner_server also handles ComputePathToPose directly.
+    planner_server = LifecycleNode(
+        package='nav2_planner',
+        executable='planner_server',
+        name='planner_server',
+        namespace='',
+        output='screen',
+        parameters=[params_file, {'use_sim_time': use_sim_time}],
+    )
+    lifecycle_node_names = [
+        'controller_server',
+        'planner_server',
+        'behavior_server',
+        'bt_navigator',
+        'waypoint_follower',
+        'velocity_smoother',
+    ]
 
     # ========================================
     # Lifecycle Manager
     # ========================================
-    # Manages lifecycle of all Nav2 nodes
     lifecycle_manager = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -143,43 +146,49 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
-            'node_names': [
-                'controller_server',
-                'smoother_server',
-                'planner_server',
-                'behavior_server',
-                'bt_navigator',
-                'waypoint_follower',
-                'velocity_smoother',
-            ],
+            'node_names': lifecycle_node_names,
             'bond_timeout': 4.0,
             'attempt_respawn_reconnection': True,
             'bond_respawn_max_duration': 10.0,
-        }]
+        }],
     )
 
-    return LaunchDescription([
-        DeclareLaunchArgument(
-            'use_sim_time',
-            default_value='false',
-            description='Use simulation time'
-        ),
-        DeclareLaunchArgument(
-            'autostart',
-            default_value='true',
-            description='Automatically start lifecycle nodes'
-        ),
-        DeclareLaunchArgument(
-            'params_file',
-            default_value=default_params,
-            description='Full path to Nav2 params file'
-        ),
+    return [
         controller_server,
-        smoother_server,
         planner_server,
         behavior_server,
         bt_navigator,
         waypoint_follower,
         velocity_smoother,
+        obstacle_gate,
         lifecycle_manager,
+    ]
+
+
+def generate_launch_description():
+    nav2_pkg = get_package_share_directory('fyp_nav2')
+    default_params = os.path.join(nav2_pkg, 'params', 'nav2_params_real.yaml')
+
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'planner',
+            default_value='dstar',
+            description='Global planner to use: "dstar" (D* Lite) or "navfn" (NavfnPlanner/A*)',
+        ),
+        DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Use simulation time',
+        ),
+        DeclareLaunchArgument(
+            'autostart',
+            default_value='true',
+            description='Automatically start lifecycle nodes',
+        ),
+        DeclareLaunchArgument(
+            'params_file',
+            default_value=default_params,
+            description='Full path to Nav2 params file',
+        ),
+        OpaqueFunction(function=_create_nav_nodes),
     ])

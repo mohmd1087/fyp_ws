@@ -89,8 +89,8 @@ def generate_launch_description():
                 arguments=[
                     '-name', 'fyp_robot',
                     '-topic', '/robot_description',
-                    '-x', '-3.0',
-                    '-y', '2.0',
+                    '-x', '1.0',
+                    '-y', '1.5',
                     '-z', '0.1',
                     '-Y', '0.0',
                 ],

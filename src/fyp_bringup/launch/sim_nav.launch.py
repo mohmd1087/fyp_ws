@@ -16,23 +16,52 @@ Topic flow (mirrors real robot):
   map_server + AMCL        →  /map  +  map→odom TF
   Nav2               reads /odometry/filtered + /map, sends /cmd_vel
 
-Robot spawns at (-3.0, 1.5) in Gazebo (free space in the map).
+Robot spawns at (1.0, 1.5) in Gazebo (free space in the map).
 Set the same initial pose in RViz (2D Pose Estimate) if AMCL needs help.
 
 Usage:
-  ros2 launch fyp_bringup sim_nav.launch.py
+  ros2 launch fyp_bringup sim_nav.launch.py                   # D* Lite (default)
+  ros2 launch fyp_bringup sim_nav.launch.py planner:=navfn   # NavfnPlanner / A*
+  ros2 launch fyp_bringup sim_nav.launch.py planner:=dstar   # D* Lite (explicit)
 """
 
 import os
 from launch import LaunchDescription
 from launch.actions import (
+    DeclareLaunchArgument,
     IncludeLaunchDescription,
-    TimerAction,
+    OpaqueFunction,
     SetEnvironmentVariable,
+    TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+
+
+def _conditional_planner_launch(context, *args, **kwargs):
+    """Return the D* Lite node launch action only when planner:=dstar."""
+    planner = LaunchConfiguration('planner').perform(context)
+
+    if planner.lower() != 'dstar':
+        return []
+
+    dstar_pkg = get_package_share_directory('fyp_dstar_lite')
+
+    return [
+        TimerAction(
+            period=11.0,
+            actions=[
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource([
+                        os.path.join(dstar_pkg, 'launch', 'dstar_planner.launch.py')
+                    ]),
+                    launch_arguments={'use_sim_time': 'true'}.items(),
+                )
+            ],
+        )
+    ]
 
 
 def generate_launch_description():
@@ -84,8 +113,8 @@ def generate_launch_description():
 
     # ========================================
     # t=3s  Spawn robot
-    # Map free corridor: row 14 at y=2.0m in world frame
-    # col 4 = x=-3.0m is free. Spawn exactly on free cell center.
+    # Inside saved map bounds (origin 0.14,-9.79, 21.3m x 12.05m)
+    # (1.0, 1.5) is in the top free corridor, well inside the map
     # ========================================
     spawn_robot = TimerAction(
         period=3.0,
@@ -96,8 +125,8 @@ def generate_launch_description():
                 arguments=[
                     '-name', 'fyp_robot',
                     '-topic', '/robot_description',
-                    '-x', '-3.0',
-                    '-y', '2.0',
+                    '-x', '1.0',
+                    '-y', '1.5',
                     '-z', '0.1',
                     '-Y', '0.0',
                 ],
@@ -185,7 +214,7 @@ def generate_launch_description():
     # t=8s  Localization: map_server + AMCL
     # Reuses localization.launch.py with sim_time + my_map.yaml
     # AMCL publishes map→odom TF so Nav2 knows where the robot is on the map
-    # Initial pose matches spawn position (-3.0, 1.5)
+    # Initial pose matches spawn position (1.0, 1.5)
     # ========================================
     localization = TimerAction(
         period=8.0,
@@ -204,6 +233,7 @@ def generate_launch_description():
 
     # ========================================
     # t=11s  Nav2
+    # planner arg forwarded so navigation.launch.py knows which planner to start
     # ========================================
     navigation = TimerAction(
         period=11.0,
@@ -215,6 +245,7 @@ def generate_launch_description():
                 launch_arguments={
                     'use_sim_time': 'true',
                     'params_file': nav2_params,
+                    'planner': LaunchConfiguration('planner'),
                 }.items()
             )
         ]
@@ -238,6 +269,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'planner',
+            default_value='dstar',
+            description='Global planner: "dstar" (D* Lite) or "navfn" (NavfnPlanner/A*)',
+        ),
         set_gz_resource_path,
         gazebo,
         robot_state_publisher,
@@ -247,5 +283,7 @@ def generate_launch_description():
         ekf_node,
         localization,
         navigation,
+        # Conditionally launch D* Lite node (only when planner:=dstar)
+        OpaqueFunction(function=_conditional_planner_launch),
         rviz,
     ])

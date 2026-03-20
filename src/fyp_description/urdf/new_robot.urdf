@@ -7,7 +7,7 @@
   <!-- base_footprint: ground-projected virtual frame (Nav2 / EKF root) -->
   <link name="base_footprint"/>
   <joint name="base_footprint_to_base_link" type="fixed">
-    <parent link="base_footprint"/>
+    <parent link="base_footprint"/t>
     <child link="base_link"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
