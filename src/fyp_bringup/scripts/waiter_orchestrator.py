@@ -24,6 +24,9 @@ import urllib.request
 from enum import Enum
 from functools import partial
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 import yaml
 import rclpy
@@ -419,6 +422,10 @@ class _HTTPHandler(BaseHTTPRequestHandler):
 # Main
 # ======================================================================
 def main():
+    # Load environment variables from orchestrator.env (same config/ directory)
+    env_path = Path(__file__).resolve().parent.parent / "config" / "orchestrator.env"
+    load_dotenv(env_path)
+
     rclpy.init()
 
     # BasicNavigator is the sole ROS2 Node in this process
