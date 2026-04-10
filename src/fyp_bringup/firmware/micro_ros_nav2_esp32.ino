@@ -47,6 +47,7 @@
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/imu.h>
 #include <geometry_msgs/msg/twist.h>
+#include <std_msgs/msg/int32.h>
 
 // ===================== TRANSPORT SELECT =====================
 #define USE_WIFI 0  // 0 = Serial USB, 1 = WiFi UDP
@@ -83,6 +84,13 @@
 #define FL_ENC_B 17
 #define FR_ENC_A 32
 #define FR_ENC_B 33
+
+// ===================== TRAY GPIO PINS =====================
+// These pins signal the second (motor-controller) ESP32 to open a tray.
+// Tray 1 → GPIO 4, Tray 2 → GPIO 5. HIGH = open tray.
+#define TRAY1_PIN 4
+#define TRAY2_PIN 5
+#define TRAY_SIGNAL_DURATION_MS 5000  // keep HIGH for 5 seconds
 
 // ===================== IMU (MPU6050) =====================
 #define IMU_I2C_ADDR  0x68
@@ -125,10 +133,12 @@ AgentState agent_state = WAITING_AGENT;
 rcl_publisher_t odom_publisher;
 rcl_publisher_t imu_publisher;
 rcl_subscription_t cmd_vel_subscriber;
+rcl_subscription_t tray_cmd_subscriber;
 
 nav_msgs__msg__Odometry odom_msg;
 sensor_msgs__msg__Imu imu_msg;
 geometry_msgs__msg__Twist cmd_vel_msg;
+std_msgs__msg__Int32 tray_cmd_msg;
 
 rclc_executor_t executor;
 rclc_support_t support;
@@ -154,6 +164,10 @@ float target_linear_x = 0.0f;
 float target_angular_z = 0.0f;
 
 const double METERS_PER_TICK = (2.0 * M_PI * WHEEL_RADIUS) / (double)ENCODER_TICKS_PER_REV;
+
+// ===================== Tray signal state =====================
+unsigned long tray_signal_start = 0;
+bool tray_signal_active = false;
 
 // ===================== IMU bias =====================
 float gyro_bias_x = 0, gyro_bias_y = 0, gyro_bias_z = 0;
@@ -354,6 +368,25 @@ void sync_time() {
 }
 
 // ===================== Callbacks =====================
+void tray_cmd_callback(const void* msgin) {
+  const std_msgs__msg__Int32* msg = (const std_msgs__msg__Int32*)msgin;
+  // Reset both pins first
+  digitalWrite(TRAY1_PIN, LOW);
+  digitalWrite(TRAY2_PIN, LOW);
+
+  if (msg->data == 1) {
+    digitalWrite(TRAY1_PIN, HIGH);
+    tray_signal_active = true;
+    tray_signal_start = millis();
+  } else if (msg->data == 2) {
+    digitalWrite(TRAY2_PIN, HIGH);
+    tray_signal_active = true;
+    tray_signal_start = millis();
+  } else {
+    tray_signal_active = false;
+  }
+}
+
 void cmd_vel_callback(const void* msgin) {
   const geometry_msgs__msg__Twist* msg = (const geometry_msgs__msg__Twist*)msgin;
   target_linear_x = msg->linear.x;
@@ -391,6 +424,14 @@ void odom_timer_callback(rcl_timer_t* timer, int64_t last_call_time) {
 
   double d_center = (d_left + d_right) / 2.0;
   double d_theta  = (d_right - d_left) / WHEEL_SEPARATION;
+
+  // Skid-steer slip compensation:
+  // During a pure turn (wheels spinning opposite directions), d_center should be
+  // exactly 0 but encoder noise makes it drift. If the turn rate is large relative
+  // to forward motion, suppress the translational component to prevent ghost movement.
+  if (fabs(d_theta) > 0.02 && fabs(d_center) < fabs(d_theta) * WHEEL_SEPARATION * 0.3) {
+    d_center = 0.0;
+  }
 
   double theta_mid = odom_theta + d_theta * 0.5;
   odom_x += d_center * cos(theta_mid);
@@ -509,6 +550,11 @@ bool create_entities() {
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
     "/cmd_vel"));
 
+  RCCHECK(rclc_subscription_init_default(
+    &tray_cmd_subscriber, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+    "/waiter/tray_cmd"));
+
   RCCHECK(rclc_timer_init_default(
     &odom_timer, &support, RCL_MS_TO_NS(ODOM_PUBLISH_MS),
     odom_timer_callback));
@@ -517,11 +563,13 @@ bool create_entities() {
     &imu_timer, &support, RCL_MS_TO_NS(IMU_PUBLISH_MS),
     imu_timer_callback));
 
-  RCCHECK(rclc_executor_init(&executor, &support.context, 3, &allocator));
+  RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
   RCCHECK(rclc_executor_add_timer(&executor, &odom_timer));
   RCCHECK(rclc_executor_add_timer(&executor, &imu_timer));
   RCCHECK(rclc_executor_add_subscription(&executor, &cmd_vel_subscriber, &cmd_vel_msg,
                                         &cmd_vel_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor, &tray_cmd_subscriber, &tray_cmd_msg,
+                                        &tray_cmd_callback, ON_NEW_DATA));
 
   init_messages();
 
@@ -537,6 +585,7 @@ void destroy_entities() {
   rcl_publisher_fini(&odom_publisher, &node);
   rcl_publisher_fini(&imu_publisher, &node);
   rcl_subscription_fini(&cmd_vel_subscriber, &node);
+  rcl_subscription_fini(&tray_cmd_subscriber, &node);
   rcl_timer_fini(&odom_timer);
   rcl_timer_fini(&imu_timer);
   rclc_executor_fini(&executor);
@@ -553,6 +602,12 @@ void setup() {
   setup_encoders();
   setup_imu();
   stop_all_motors();
+
+  // Tray signal pins (output to second ESP32)
+  pinMode(TRAY1_PIN, OUTPUT);
+  pinMode(TRAY2_PIN, OUTPUT);
+  digitalWrite(TRAY1_PIN, LOW);
+  digitalWrite(TRAY2_PIN, LOW);
 
 #if USE_WIFI
   set_microros_wifi_transports(WIFI_SSID, WIFI_PASS, AGENT_IP, AGENT_PORT);
@@ -600,6 +655,13 @@ void loop() {
           target_angular_z = 0.0f;
         }
 
+        // Auto-off tray signal after duration
+        if (tray_signal_active && (millis() - tray_signal_start > TRAY_SIGNAL_DURATION_MS)) {
+          digitalWrite(TRAY1_PIN, LOW);
+          digitalWrite(TRAY2_PIN, LOW);
+          tray_signal_active = false;
+        }
+
         if (millis() - last_time_sync > TIME_SYNC_INTERVAL_MS) {
           sync_time();
         }
@@ -611,6 +673,9 @@ void loop() {
       target_linear_x = 0.0f;
       target_angular_z = 0.0f;
       time_synced = false;
+      digitalWrite(TRAY1_PIN, LOW);
+      digitalWrite(TRAY2_PIN, LOW);
+      tray_signal_active = false;
 
       destroy_entities();
       agent_state = WAITING_AGENT;

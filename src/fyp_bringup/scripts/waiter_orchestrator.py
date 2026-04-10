@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 
 import yaml
 import rclpy
-from std_msgs.msg import String
+from std_msgs.msg import String, Int32
 from geometry_msgs.msg import PoseStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
@@ -109,10 +109,15 @@ class WaiterOrchestrator:
         # Signals from HTTP thread
         self._dispatch_event = threading.Event()
         self._dispatch_table_id: str | None = None
+        self._dispatch_tray: int | None = None
+        self._current_tray: int | None = None
         self._order_complete_event = threading.Event()
 
         # State publisher
         self._state_pub = navigator.create_publisher(String, "/waiter/state", 10)
+
+        # Tray command publisher (signals ESP32 to open a tray on arrival)
+        self._tray_pub = navigator.create_publisher(Int32, "/waiter/tray_cmd", 10)
 
         # Timer to drive state machine (1 Hz)
         navigator.create_timer(1.0, self._tick)
@@ -163,8 +168,9 @@ class WaiterOrchestrator:
         try:
             payload = json.loads(data) if isinstance(data, str) else data
             table_id = payload.get("table_id")
+            tray = payload.get("tray")  # None if not specified (original buttons)
             if table_id:
-                result = self.handle_dispatch(table_id)
+                result = self.handle_dispatch(table_id, tray=tray)
                 self.logger.info(f"Remote dispatch result: {result}")
         except Exception as e:
             self.logger.error(f"Failed to handle remote dispatch: {e}")
@@ -243,6 +249,7 @@ class WaiterOrchestrator:
                     self.logger.info(f"Arrived at {current_table}!")
                     with self._lock:
                         self._state = WaiterState.AT_TABLE
+                        self._current_tray = self._dispatch_tray
                     self._on_arrived_at_table()
                 else:
                     self.logger.error(f"Navigation to {current_table} failed: {result}")
@@ -272,16 +279,25 @@ class WaiterOrchestrator:
                 with self._lock:
                     self._current_table = None
                     self._current_room = None
+                    self._current_tray = None
                     self._state = WaiterState.IDLE
 
     # ------------------------------------------------------------------
     # LiveKit room management
     # ------------------------------------------------------------------
     def _on_arrived_at_table(self):
-        """Create/ensure LiveKit room exists for this table."""
+        """Create/ensure LiveKit room exists for this table, and signal tray if requested."""
         with self._lock:
             room_name = self._current_table  # e.g. "table-1"
             self._current_room = room_name
+            tray = self._current_tray
+
+        # Publish tray command to ESP32 (only if a tray was selected)
+        if tray is not None:
+            tray_msg = Int32()
+            tray_msg.data = tray
+            self._tray_pub.publish(tray_msg)
+            self.logger.info(f"Published tray command: tray {tray}")
 
         if not HAS_LIVEKIT:
             self.logger.warn("livekit-api not installed, skipping room creation")
@@ -327,7 +343,7 @@ class WaiterOrchestrator:
     # ------------------------------------------------------------------
     # HTTP dispatch / order_complete handlers (called from HTTP thread)
     # ------------------------------------------------------------------
-    def handle_dispatch(self, table_id: str) -> dict:
+    def handle_dispatch(self, table_id: str, tray: int | None = None) -> dict:
         with self._lock:
             if not self._nav2_ready:
                 return {"ok": False, "error": "Nav2 is not ready yet"}
@@ -338,8 +354,9 @@ class WaiterOrchestrator:
                     "current_table": self._current_table,
                 }
             self._dispatch_table_id = table_id
+            self._dispatch_tray = tray
             self._dispatch_event.set()
-            return {"ok": True, "table_id": table_id}
+            return {"ok": True, "table_id": table_id, "tray": tray}
 
     def handle_order_complete(self, room_name: str, order_id: str) -> dict:
         with self._lock:
@@ -401,7 +418,8 @@ class _HTTPHandler(BaseHTTPRequestHandler):
             if not table_id:
                 self._send_json({"error": "table_id required"}, 400)
                 return
-            result = self.orchestrator.handle_dispatch(table_id)
+            tray = data.get("tray")  # None if not specified (original buttons)
+            result = self.orchestrator.handle_dispatch(table_id, tray=tray)
             self._send_json(result, 200 if result["ok"] else 409)
 
         elif self.path == "/order_complete":
@@ -447,7 +465,10 @@ def main():
 
     # Wait for Nav2 to be fully active
     navigator.get_logger().info("Waiting for Nav2 to become active...")
-    navigator.waitUntilNav2Active()
+    # Use 'bt_navigator' as localizer when running RTAB-Map (no AMCL lifecycle node)
+    import os as _os
+    _localizer = 'amcl' if _os.environ.get('LOCALIZATION_MODE', 'amcl').lower() == 'amcl' else 'bt_navigator'
+    navigator.waitUntilNav2Active(localizer=_localizer)
     orchestrator.mark_nav2_ready()
 
     try:

@@ -21,28 +21,44 @@ ekf_filter_node:
     # For skid-steer: fuse ONLY forward velocity from wheels.
     # (Wheel slip makes yaw and position from wheels unreliable.)
     odom0: /wheel/odometry
-    odom0_config: [false, false, false,   # x, y, z
-                   false, false, false,   # roll, pitch, yaw
-                   true,  false, false,   # vx, vy, vz  (vx only)
-                   false, false, true,    # vroll, vpitch, vyaw (vyaw from wheel diff)
+    odom0_config: [false, false, false,   # x, y, z  (OFF — slip causes position drift during turns)
+                   false, false, false,   # roll, pitch, yaw  (OFF — use velocities only)
+                   true,  false, false,   # vx
+                   false, false, true,    # vyaw
                    false, false, false]   # ax, ay, az
-    odom0_differential: false
-    odom0_relative: false
+    odom0_differential: true             # treat as velocity-only, EKF integrates position itself
+    odom0_relative: true
     odom0_queue_size: 10
+
+    # ========================================
+    # Visual Odometry Input (/vo/odometry)
+    # ========================================
+    # rgbd_odometry computes camera-based motion estimate.
+    # Fuse vx and vyaw from visual odometry — complements wheel odom.
+    # Use differential mode since VO pose drifts over time (only velocity is reliable).
+    odom1: /vo/odometry
+    odom1_config: [false, false, false,   # x, y, z
+                   false, false, false,   # roll, pitch, yaw
+                   true,  false, false,   # vx
+                   false, false, true,    # vyaw
+                   false, false, false]   # ax, ay, az
+    odom1_differential: true
+    odom1_relative: true
+    odom1_queue_size: 10
 
     # ========================================
     # IMU Input (/imu/data)
     # ========================================
-    # MPU6050 message from your ESP32 has:
-    # - orientation_covariance[0] = -1  (NO ORIENTATION)
-    # So DO NOT fuse yaw orientation here.
-    # Use ONLY gyro z (vyaw) for heading rate.
+    # MPU6050 on ESP32:
+    # - orientation_covariance[0] = -1  (NO absolute orientation)
+    # - angular_velocity (gyro) IS available and reliable
+    # Fuse gyro z (vyaw) — much better heading than wheel diff on skid-steer
     imu0: /imu/data
     imu0_config: [false, false, false,    # x, y, z
-                  false, false, false,    # roll, pitch, yaw  (OFF - no orientation provided)
+                  false, false, false,    # roll, pitch, yaw
                   false, false, false,    # vx, vy, vz
-                  false, false, false,    # vroll, vpitch, vyaw (OFF - use wheel odom for yaw)
-                  false, false, false]    # ax, ay, az
+                  false, false, false,    # vroll, vpitch, vyaw  (OFF — IMU hardware not working)
+                  false, false, false]    # ax, ay, az  (OFF — IMU hardware not working)
     imu0_differential: false
     imu0_relative: false
     imu0_remove_gravitational_acceleration: true

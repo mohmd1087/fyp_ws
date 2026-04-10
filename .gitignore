@@ -59,5 +59,8 @@ _deps/
 *.posegraph
 *.data
 
+# RTAB-Map databases (large binary files — store separately, not in git)
+*.db
+
 # Gazebo cache
 .gz/

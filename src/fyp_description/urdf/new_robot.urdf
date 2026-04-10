@@ -7,7 +7,7 @@
   <!-- base_footprint: ground-projected virtual frame (Nav2 / EKF root) -->
   <link name="base_footprint"/>
   <joint name="base_footprint_to_base_link" type="fixed">
-    <parent link="base_footprint"/t>
+    <parent link="base_footprint"/>
     <child link="base_link"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
@@ -281,11 +281,18 @@
     <origin xyz="0.14 0.0 0.34" rpy="0 0 0"/>
   </joint>
 
-  <!-- Camera optical frame: Z-forward, X-right, Y-down (REP-103 optical) -->
+  <!-- Camera optical frames: Z-forward, X-right, Y-down (REP-103 optical) -->
   <link name="camera_depth_optical_frame"/>
   <joint name="camera_depth_optical_joint" type="fixed">
     <parent link="camera_link"/>
     <child link="camera_depth_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <link name="camera_color_optical_frame"/>
+  <joint name="camera_color_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_color_optical_frame"/>
     <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
   </joint>
 

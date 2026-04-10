@@ -15,11 +15,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "table_id required" }, { status: 400 });
   }
 
+  // tray is optional — only present for tray-dispatch buttons (1 or 2)
+  const tray = body?.tray;
+  if (tray !== undefined && tray !== 1 && tray !== 2) {
+    return NextResponse.json({ error: "tray must be 1 or 2" }, { status: 400 });
+  }
+
   const bus = getRealtimeBus();
   await bus.publish("robot", "robot.dispatch", {
     table_id: tableId,
+    ...(tray !== undefined && { tray }),
     dispatched_at: new Date().toISOString(),
   });
 
-  return NextResponse.json({ ok: true, table_id: tableId });
+  return NextResponse.json({ ok: true, table_id: tableId, ...(tray !== undefined && { tray }) });
 }

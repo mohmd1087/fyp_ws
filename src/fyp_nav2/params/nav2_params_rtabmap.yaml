@@ -1,6 +1,7 @@
-# Nav2 Parameters for Real Robot
-# Tuned for 4WD skid-steer robot with Orbbec Astra Pro depth camera
-# Robot dimensions: ~0.45m x 0.32m
+# Nav2 Parameters for Real Robot — RTAB-Map localization mode
+# Same as nav2_params_real.yaml but uses PointCloud2 from depth camera
+# instead of /scan for obstacle layers (no fake laser scan needed)
+# Activate with: LOCALIZATION_MODE=rtabmap ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
 
 bt_navigator:
   ros__parameters:
@@ -58,22 +59,22 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.2
+      max_vel_x: 0.12
       max_vel_y: 0.0
-      max_vel_theta: 0.3
+      max_vel_theta: 0.2
       min_speed_xy: 0.0
-      max_speed_xy: 0.2
+      max_speed_xy: 0.12
       min_speed_theta: 0.0
-      acc_lim_x: 0.5
+      acc_lim_x: 0.08
       acc_lim_y: 0.0
-      acc_lim_theta: 0.5
-      decel_lim_x: -0.5
+      acc_lim_theta: 0.15
+      decel_lim_x: -0.1
       decel_lim_y: 0.0
-      decel_lim_theta: -0.5
+      decel_lim_theta: -0.2
       vx_samples: 20
       vy_samples: 0
-      vtheta_samples: 20
-      sim_time: 1.5
+      vtheta_samples: 40
+      sim_time: 3.0
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
@@ -81,15 +82,17 @@ controller_server:
       trans_stopped_velocity: 0.1
       short_circuit_trajectory_evaluation: True
       stateful: True
+      # RotateToGoal removed — causes spinning near goal
+      # PathAlign with larger forward_point_distance stops forward-then-reverse behaviour
       critics: ["Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.02
       PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.1
+      PathAlign.forward_point_distance: 0.5
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       Oscillation.scale: 1.0
-      Oscillation.oscillation_reset_dist: 0.05
-      Oscillation.oscillation_reset_angle: 0.2
+      Oscillation.oscillation_reset_dist: 0.3
+      Oscillation.oscillation_reset_angle: 0.5
 
 planner_server:
   ros__parameters:
@@ -154,13 +157,13 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.2, 0.0, 0.4]
-    min_velocity: [-0.2, 0.0, -0.4]
-    max_accel: [0.5, 0.0, 1.0]
-    max_decel: [-0.5, 0.0, -1.0]
+    max_velocity: [0.12, 0.0, 0.2]
+    min_velocity: [-0.12, 0.0, -0.2]
+    max_accel: [0.08, 0.0, 0.15]   # very gentle ramp up
+    max_decel: [-0.1, 0.0, -0.2]   # very gentle ramp down
     odom_topic: /odometry/filtered
     odom_duration: 0.1
-    deadband_velocity: [0.0, 0.0, 0.0]
+    deadband_velocity: [0.01, 0.0, 0.01]  # ignore tiny commands to prevent micro-jitter
     velocity_timeout: 1.0
 
 local_costmap:
@@ -177,33 +180,28 @@ local_costmap:
       resolution: 0.05
       robot_radius: 0.25
       footprint_padding: 0.03
-      plugins: ["voxel_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "inflation_layer"]
 
-      voxel_layer:
-        plugin: "nav2_costmap_2d::VoxelLayer"
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        publish_voxel_map: True
-        origin_z: 0.0
-        z_resolution: 0.05
-        z_voxels: 16
-        max_obstacle_height: 2.0
-        mark_threshold: 0
-        observation_sources: scan
-        scan:
-          topic: /scan
-          max_obstacle_height: 2.0
+        observation_sources: pointcloud
+        pointcloud:
+          topic: /camera/depth/points
+          data_type: "PointCloud2"
+          max_obstacle_height: 1.5
+          min_obstacle_height: 0.25  # ignore floor noise, only mark obstacles above 25cm
           clearing: True
           marking: True
-          data_type: "LaserScan"
-          raytrace_max_range: 3.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 2.5
-          obstacle_min_range: 0.0
+          raytrace_max_range: 2.5
+          raytrace_min_range: 0.3
+          obstacle_max_range: 2.0
+          obstacle_min_range: 0.3
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.30
+        inflation_radius: 0.35
 
       always_send_full_costmap: True
 
@@ -219,27 +217,12 @@ global_costmap:
       footprint_padding: 0.03
       resolution: 0.05
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: /map
-
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: True
-        observation_sources: scan
-        scan:
-          topic: /scan
-          max_obstacle_height: 2.0
-          clearing: True
-          marking: True
-          data_type: "LaserScan"
-          raytrace_max_range: 5.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 4.5
-          obstacle_min_range: 0.0
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

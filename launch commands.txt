@@ -21,6 +21,9 @@ ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav map:=/home/muhammad/fyp_
 
 
 source ~/fyp_ws/install/setup.bash
+source ~/micro_ros_agent_ws/install/setup.bash
+source /home/muhammad/fyp_ws/install/setup.bash
+
 
 
 
@@ -30,3 +33,7 @@ source ~/fyp_ws/install/setup.bash
 3	Voice Agent:	python agent.py dev
 4	Dashboard:	npm run dev
 5	Mic/Speaker bridge:	python local_participant.py
+
+
+LOCALIZATION_MODE=rtabmap ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
+LOCALIZATION_MODE=rtabmap ros2 launch fyp_bringup waiter.launch.py

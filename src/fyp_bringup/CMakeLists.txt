@@ -10,13 +10,13 @@ find_package(ament_cmake REQUIRED)
 # Install robot description resources (URDF, meshes, RViz, launch)
 # IMPORTANT: must be before ament_package()
 install(
-  DIRECTORY launch config maps worlds
+  DIRECTORY launch config maps worlds rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
 # Install Python scripts
 install(
-  PROGRAMS scripts/pose_sync.py scripts/waiter_orchestrator.py scripts/obstacle_gate_node.py
+  PROGRAMS scripts/pose_sync.py scripts/waiter_orchestrator.py scripts/obstacle_gate_node.py scripts/depth_sync_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

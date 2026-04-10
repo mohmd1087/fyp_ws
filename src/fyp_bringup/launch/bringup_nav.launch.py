@@ -7,12 +7,22 @@ Usage:
   SLAM mode (create map):
     ros2 launch fyp_bringup bringup_nav.launch.py mode:=slam
 
-  Navigation mode (use existing map):
-    ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav map:=/path/to/map.yaml
+  Navigation mode — AMCL (default):
+    ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
+
+  Navigation mode — RTAB-Map (visual localization, no fake scan):
+    LOCALIZATION_MODE=rtabmap ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
+
+  RTAB-Map first-time map building:
+    LOCALIZATION_MODE=rtabmap RTABMAP_MAPPING=true ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
 
 Arguments:
   mode: 'slam' for mapping, 'nav' for navigation (default: nav)
   map: path to map YAML file (required for nav mode)
+
+Environment Variables:
+  LOCALIZATION_MODE: 'amcl' (default) or 'rtabmap'
+  RTABMAP_MAPPING:   'true' to build new map (default: false = localize only)
 """
 
 import os
@@ -35,6 +45,10 @@ def generate_launch_description():
     # Package directories
     bringup_pkg = get_package_share_directory('fyp_bringup')
     nav2_pkg = get_package_share_directory('fyp_nav2')
+
+    # Localization mode from environment variable (resolved at launch time)
+    localization_mode = os.environ.get('LOCALIZATION_MODE', 'amcl').lower()
+    use_rtabmap = (localization_mode == 'rtabmap')
 
     # Launch arguments
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
@@ -124,25 +138,54 @@ def generate_launch_description():
     # ========================================
     # 4b. Navigation Mode (delayed 5 seconds)
     # ========================================
-    # Launch localization (AMCL) and navigation stack
+    # Launch localization and navigation stack
+    # Localization choice depends on LOCALIZATION_MODE env var:
+    #   amcl     → AMCL + map server (default)
+    #   rtabmap  → RTAB-Map RGB-D visual localization
 
-    # Localization launch
-    localization_launch = TimerAction(
-        period=5.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(bringup_pkg, 'launch', 'localization.launch.py')
-                ),
-                launch_arguments={
-                    'use_sim_time': use_sim_time,
-                    'map': map_yaml,
-                }.items(),
-                condition=IfCondition(
-                    PythonExpression(["'", mode, "' == 'nav'"])
+    if use_rtabmap:
+        # RTAB-Map: visual localization/mapping using RGB-D camera
+        # Runs in both 'nav' mode (localization) and 'mapping' mode (map building)
+        localization_launch = TimerAction(
+            period=5.0,
+            actions=[
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        os.path.join(bringup_pkg, 'launch', 'rtabmap.launch.py')
+                    ),
+                    launch_arguments={
+                        'use_sim_time': use_sim_time,
+                    }.items(),
+                    condition=IfCondition(
+                        PythonExpression(["'", mode, "' in ['nav', 'mapping']"])
+                    )
                 )
-            )
-        ]
+            ]
+        )
+    else:
+        # AMCL: traditional scan-based localization
+        localization_launch = TimerAction(
+            period=5.0,
+            actions=[
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        os.path.join(bringup_pkg, 'launch', 'localization.launch.py')
+                    ),
+                    launch_arguments={
+                        'use_sim_time': use_sim_time,
+                        'map': map_yaml,
+                    }.items(),
+                    condition=IfCondition(
+                        PythonExpression(["'", mode, "' == 'nav'"])
+                    )
+                )
+            ]
+        )
+
+    # Nav2 params file depends on localization mode
+    nav2_params = os.path.join(
+        nav2_pkg, 'params',
+        'nav2_params_rtabmap.yaml' if use_rtabmap else 'nav2_params_real.yaml'
     )
 
     # Navigation launch (delayed further for localization to start)
@@ -156,6 +199,7 @@ def generate_launch_description():
                 launch_arguments={
                     'use_sim_time': use_sim_time,
                     'planner': planner,
+                    'params_file': nav2_params,
                 }.items(),
                 condition=IfCondition(
                     PythonExpression(["'", mode, "' == 'nav'"])
@@ -203,7 +247,7 @@ def generate_launch_description():
                 output='screen',
                 # Only launch RViz in nav mode (SLAM launch already includes RViz)
                 condition=IfCondition(
-                    PythonExpression(["'", mode, "' == 'nav'"])
+                    PythonExpression(["'", mode, "' in ['nav', 'mapping']"])
                 )
             )
         ]
@@ -219,7 +263,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'mode',
             default_value='nav',
-            description='Operating mode: slam (mapping) or nav (navigation)'
+            description='Operating mode: nav (navigation), mapping (rtabmap map building, no Nav2), slam (slam_toolbox)'
         ),
         DeclareLaunchArgument(
             'map',

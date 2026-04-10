@@ -231,7 +231,8 @@ class DStarPlannerNode(Node):
         # 1. Line-of-sight shortcut: skip waypoints that are directly visible
         path_grid = _los_prune(path_grid, ogrid)
         # 2. RDP simplification: collapse near-collinear points into straight segments
-        path_grid = _rdp_simplify(path_grid, epsilon=1.5)
+        # epsilon=3.0 grid cells (~15cm) — fewer waypoints = smoother DWB tracking
+        path_grid = _rdp_simplify(path_grid, epsilon=3.0)
 
         # ---- Convert grid path → nav_msgs/Path ---------------------------
         now = self.get_clock().now().to_msg()
@@ -253,7 +254,7 @@ class DStarPlannerNode(Node):
             path_msg.poses.append(pose)
 
         # Fill yaw: each pose points toward the next waypoint
-        _fill_path_orientations(path_msg)
+        _fill_path_orientations(path_msg, request.goal.pose.orientation)
 
         self._path_pub.publish(path_msg)
 
@@ -346,7 +347,7 @@ def _rdp_simplify(path, epsilon: float = 1.5) -> list:
     return rdp(path)
 
 
-def _fill_path_orientations(path: Path):
+def _fill_path_orientations(path: Path, goal_orientation=None):
     poses = path.poses
     for i in range(len(poses) - 1):
         dx = poses[i + 1].pose.position.x - poses[i].pose.position.x
@@ -357,10 +358,10 @@ def _fill_path_orientations(path: Path):
         poses[i].pose.orientation.z = math.sin(yaw / 2.0)
         poses[i].pose.orientation.w = math.cos(yaw / 2.0)
     if poses:
-        poses[-1].pose.orientation.x = 0.0
-        poses[-1].pose.orientation.y = 0.0
-        poses[-1].pose.orientation.z = 0.0
-        poses[-1].pose.orientation.w = 1.0
+        if goal_orientation is not None:
+            poses[-1].pose.orientation = goal_orientation
+        elif len(poses) > 1:
+            poses[-1].pose.orientation = poses[-2].pose.orientation
 
 
 def main(args=None):
