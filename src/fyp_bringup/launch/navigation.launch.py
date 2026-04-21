@@ -118,6 +118,15 @@ def _create_nav_nodes(context, *args, **kwargs):
     # (/global_costmap/costmap) that D* Lite subscribes to.
     # The ComputePathToPose action is handled by dstar_planner_node instead.
     # In navfn mode, planner_server also handles ComputePathToPose directly.
+    # When planner:=dstar, remap planner_server's ComputePathToPose action
+    # so it doesn't shadow dstar_planner_node on the real action name.
+    planner_arg = context.launch_configurations.get('planner', 'dstar')
+    planner_remaps = []
+    if planner_arg == 'dstar':
+        planner_remaps = [
+            ('compute_path_to_pose', 'compute_path_to_pose_navfn'),
+            ('compute_path_through_poses', 'compute_path_through_poses_navfn'),
+        ]
     planner_server = LifecycleNode(
         package='nav2_planner',
         executable='planner_server',
@@ -125,10 +134,21 @@ def _create_nav_nodes(context, *args, **kwargs):
         namespace='',
         output='screen',
         parameters=[params_file, {'use_sim_time': use_sim_time}],
+        remappings=planner_remaps,
     )
+    smoother_server = LifecycleNode(
+        package='nav2_smoother',
+        executable='smoother_server',
+        name='smoother_server',
+        namespace='',
+        output='screen',
+        parameters=[params_file, {'use_sim_time': use_sim_time}],
+    )
+
     lifecycle_node_names = [
         'controller_server',
         'planner_server',
+        'smoother_server',
         'behavior_server',
         'bt_navigator',
         'waypoint_follower',
@@ -156,6 +176,7 @@ def _create_nav_nodes(context, *args, **kwargs):
     return [
         controller_server,
         planner_server,
+        smoother_server,
         behavior_server,
         bt_navigator,
         waypoint_follower,

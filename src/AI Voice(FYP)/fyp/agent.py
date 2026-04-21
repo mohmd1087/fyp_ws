@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import time
@@ -252,6 +253,10 @@ class RestaurantWaiter(Agent):
             instructions=(
                 "Your name is AMORA and you are a highly professional restaurant waiter taking voice orders.\n"
                 "Style: warm, polite, efficient, and confident.\n"
+                "OPENING: As soon as the session starts, greet the guest warmly as AMORA, a waiter at "
+                "Saffron Garden. Do NOT wait for them to speak first — start the conversation yourself. "
+                "Welcome them, ask if it's dine-in, takeaway, or delivery, ask about any allergies, "
+                "and then ask what they'd like to order.\n"
                 "Goals:\n"
                 "1) Answer questions about the restaurant and menu and answer in the language you are talked to in.\n"
                 "2) Take the order conversationally and collect: order_type (dine_in/takeaway/delivery), "
@@ -271,15 +276,36 @@ class RestaurantWaiter(Agent):
 
     @function_tool(
         name="get_menu",
-        description="Get the menu. Optional: provide category to return only that category.",
+        description=(
+            "Get the menu. By default returns only item_id, name, price, and category "
+            "for every item (a compact summary). "
+            "Optional: provide 'category' to restrict to one category. "
+            "For full details (description, allergens, tags) of a specific item, call get_item_details."
+        ),
     )
-    async def get_menu(self, context: RunContext, category: Optional[str] = None) -> Dict[str, Any]:
+    async def get_menu(
+        self, context: RunContext, category: Optional[str] = None
+    ) -> Dict[str, Any]:
+        def _summary(item_id: str, item: Dict[str, Any], cat: str) -> Dict[str, Any]:
+            return {
+                "item_id": item_id,
+                "name": item["name"],
+                "price": item["price"],
+                "category": cat,
+            }
+
         if category:
             key = category.strip().lower()
-            if key in MENU:
-                return {key: MENU[key]}
-            return {"error": f"Unknown category '{category}'. Valid: {list(MENU.keys())}"}
-        return MENU
+            if key not in MENU:
+                return {"error": f"Unknown category '{category}'. Valid: {list(MENU.keys())}"}
+            return {"items": [_summary(iid, it, key) for iid, it in MENU[key].items()]}
+
+        items = [
+            _summary(iid, it, cat)
+            for cat, cat_items in MENU.items()
+            for iid, it in cat_items.items()
+        ]
+        return {"items": items, "categories": list(MENU.keys())}
 
     @function_tool(
         name="get_item_details",
@@ -290,6 +316,32 @@ class RestaurantWaiter(Agent):
         if item_id not in FLAT_MENU:
             return {"error": f"Unknown item_id '{item_id}'. Ask for get_menu and choose a valid item_id."}
         return FLAT_MENU[item_id]
+
+    async def _notify_orchestrator_order_complete(self, context: RunContext, order_id: str) -> None:
+        """POST to the orchestrator's /order_complete endpoint so the robot can
+        leave AT_TABLE and navigate home. Fail-soft: any failure is logged and
+        swallowed — the voice agent must never crash due to orchestrator issues."""
+        base_url = os.getenv("ORCHESTRATOR_CALLBACK_URL")
+        if not base_url:
+            print("[orchestrator] ORCHESTRATOR_CALLBACK_URL not set, skipping release signal.")
+            return
+
+        room_name = ""
+        try:
+            room_name = context.session.room.name or ""
+        except Exception as exc:
+            print(f"[orchestrator] Could not resolve room name: {exc}")
+
+        payload = {"room_name": room_name, "order_id": order_id}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(f"{base_url}/order_complete", json=payload)
+                if 200 <= resp.status_code < 300:
+                    print(f"[orchestrator] Released AT_TABLE for room '{room_name}' (order {order_id})")
+                else:
+                    print(f"[orchestrator] /order_complete failed: {resp.status_code} {resp.text[:200]}")
+        except Exception as exc:
+            print(f"[orchestrator] Could not reach orchestrator: {exc}")
 
     @function_tool(raw_schema=FINALIZE_ORDER_SCHEMA)
     async def finalize_order(self, raw_arguments: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
@@ -397,6 +449,11 @@ class RestaurantWaiter(Agent):
         else:
             print("[dashboard] DASHBOARD_API_URL or DASHBOARD_AGENT_KEY not set, skipping.")
 
+        # Release the robot from AT_TABLE so it navigates home. The orchestrator
+        # HTTP endpoint lives on the robot at ORCHESTRATOR_CALLBACK_URL (e.g.
+        # http://<robot-ip>:5050).
+        await self._notify_orchestrator_order_complete(context, order_json["order_id"])
+
         # Keep tool response SMALL (reduces chance of 1011 around tool responses)
         return {"ok": True, "order_id": order_json["order_id"], "total": totals["total"], "currency": totals["currency"]}
 
@@ -409,7 +466,7 @@ async def waiter_agent(ctx: agents.JobContext):
     # Use the beta realtime model + explicit model name (current LiveKit recipe style)
     session = AgentSession(
         llm=google.beta.realtime.RealtimeModel(
-            model="gemini-2.5-flash-native-audio-preview-12-2025",
+            model="gemini-3.1-flash-live-preview",
             voice="Puck",
             temperature=0.4,
             # proactivity=True,  # optional
@@ -428,13 +485,33 @@ async def waiter_agent(ctx: agents.JobContext):
     # Ensure the job connects (matches recommended entrypoint flow used in recipes)
     await ctx.connect()
 
-    await session.generate_reply(
-        instructions=(
-            "Greet the guest as a waiter at Saffron Garden. "
-            "Ask if it's dine-in, takeaway, or delivery, and if they have any allergies. "
-            "Then ask what they'd like to order."
-        )
-    )
+    # Wait for the customer (local_participant) to actually join the room before
+    # greeting — otherwise the agent talks into an empty room and the user never
+    # hears the opening line.
+    async def _wait_for_participant(timeout: float = 120.0) -> bool:
+        if ctx.room.remote_participants:
+            return True
+        joined = asyncio.Event()
+
+        def _on_joined(_p):
+            joined.set()
+
+        ctx.room.on("participant_connected", _on_joined)
+        try:
+            await asyncio.wait_for(joined.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            ctx.room.off("participant_connected", _on_joined)
+
+    await _wait_for_participant()
+    # Small settle delay so the participant's audio subscription is fully wired
+    # before the agent speaks (otherwise the first word can get clipped).
+    await asyncio.sleep(0.8)
+    # Greeting is now baked into the system instructions (OPENING section) —
+    # gemini-3.1-flash-live-preview does not support generate_reply() mid-session.
+    # The model will greet on its own as soon as it starts speaking.
 
 
 if __name__ == "__main__":

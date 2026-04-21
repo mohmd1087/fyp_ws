@@ -19,6 +19,7 @@ import json
 import math
 import os
 import threading
+import time
 import asyncio
 import urllib.request
 from enum import Enum
@@ -30,8 +31,12 @@ from dotenv import load_dotenv
 
 import yaml
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import String, Int32
 from geometry_msgs.msg import PoseStamped
+from action_msgs.msg import GoalStatus
+from nav2_msgs.action import NavigateToPose
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 # LiveKit Server SDK is optional — room creation is skipped if not installed
@@ -47,6 +52,11 @@ try:
     HAS_PYSHER = True
 except ImportError:
     HAS_PYSHER = False
+
+
+# Safety net: auto-release AT_TABLE after this many seconds so a missed voice
+# agent callback, stuck tray ESP, or crashed dashboard can't strand the robot.
+AT_TABLE_TIMEOUT_SEC = 300.0
 
 
 class WaiterState(Enum):
@@ -112,6 +122,7 @@ class WaiterOrchestrator:
         self._dispatch_tray: int | None = None
         self._current_tray: int | None = None
         self._order_complete_event = threading.Event()
+        self._at_table_entered_at: float | None = None
 
         # State publisher
         self._state_pub = navigator.create_publisher(String, "/waiter/state", 10)
@@ -119,8 +130,19 @@ class WaiterOrchestrator:
         # Tray command publisher (signals ESP32 to open a tray on arrival)
         self._tray_pub = navigator.create_publisher(Int32, "/waiter/tray_cmd", 10)
 
-        # Timer to drive state machine (1 Hz)
-        navigator.create_timer(1.0, self._tick)
+        # Tray-closed feedback from the micro-ROS ESP32. Motor ESP asserts a
+        # GPIO line when the tray physically closes; firmware republishes the
+        # last-commanded tray number here. Treated as an alternate path to
+        # release AT_TABLE (HTTP /order_complete remains a fallback).
+        self._tray_status_sub = navigator.create_subscription(
+            Int32, "/waiter/tray_status", self._on_tray_status, 10
+        )
+
+        # Timer to drive state machine (1 Hz). Use a ReentrantCallbackGroup so
+        # nested spin calls inside BasicNavigator.goToPose() don't deadlock the
+        # executor.
+        self._cb_group = ReentrantCallbackGroup()
+        navigator.create_timer(1.0, self._tick, callback_group=self._cb_group)
 
         # HTTP server (daemon thread)
         self._http_server = HTTPServer(
@@ -202,6 +224,67 @@ class WaiterOrchestrator:
             self._nav2_ready = True
         self.logger.info("Nav2 is active. Orchestrator accepting commands.")
 
+    def _send_goal_nonblocking(self, pose: PoseStamped):
+        """Send a NavigateToPose goal WITHOUT calling spin_until_future_complete.
+
+        BasicNavigator.goToPose() blocks the executor via a nested spin waiting
+        for goal acceptance, which deadlocks when called from a timer callback.
+        We bypass that by calling the action client directly and tracking the
+        futures ourselves in _check_nav_result().
+        """
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = pose
+        goal_msg.behavior_tree = ""
+
+        # Kick off send_goal_async; do NOT wait for it. The result-future chain
+        # is wired up in a callback so result_future gets set as soon as the
+        # server accepts.
+        self.navigator.goal_handle = None
+        self.navigator.result_future = None
+        send_goal_future = self.navigator.nav_to_pose_client.send_goal_async(
+            goal_msg, feedback_callback=self.navigator._feedbackCallback
+        )
+        send_goal_future.add_done_callback(self._on_goal_response)
+
+    def _on_goal_response(self, future):
+        """Callback when the action server accepts/rejects the goal."""
+        goal_handle = future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            self.logger.error("Goal was rejected by server")
+            with self._lock:
+                self._state = WaiterState.IDLE
+                self._current_table = None
+            return
+        self.logger.info("Goal accepted — awaiting result")
+        self.navigator.goal_handle = goal_handle
+        self.navigator.result_future = goal_handle.get_result_async()
+
+    def _check_nav_result(self) -> TaskResult | None:
+        """Check navigation result WITHOUT nested rclpy.spin (avoids deadlock).
+
+        BasicNavigator.isTaskComplete() calls spin_until_future_complete()
+        internally, which deadlocks when called from a timer callback running
+        inside rclpy.spin().  Instead we check the future directly.
+
+        Returns TaskResult if done, None if still in progress.
+        """
+        result_future = self.navigator.result_future
+        if result_future is None:
+            return TaskResult.UNKNOWN
+
+        if not result_future.done():
+            return None  # still navigating
+
+        status = result_future.result().status
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            return TaskResult.SUCCEEDED
+        elif status == GoalStatus.STATUS_ABORTED:
+            return TaskResult.FAILED
+        elif status == GoalStatus.STATUS_CANCELED:
+            return TaskResult.CANCELED
+        else:
+            return TaskResult.UNKNOWN
+
     # ------------------------------------------------------------------
     # State machine tick (runs on ROS2 timer thread)
     # ------------------------------------------------------------------
@@ -234,7 +317,7 @@ class WaiterOrchestrator:
                     t = self.table_poses_raw[table_id]
                     goal = make_pose(t["x"], t["y"], t["yaw"], self.navigator)
                     self.logger.info(f"Navigating to {table_id} ({t['x']}, {t['y']})")
-                    self.navigator.goToPose(goal)
+                    self._send_goal_nonblocking(goal)
                     with self._lock:
                         self._current_table = table_id
                         self._state = WaiterState.NAVIGATING_TO_TABLE
@@ -243,13 +326,15 @@ class WaiterOrchestrator:
 
         # --- NAVIGATING_TO_TABLE: poll nav completion ---
         elif state == WaiterState.NAVIGATING_TO_TABLE:
-            if self.navigator.isTaskComplete():
-                result = self.navigator.getResult()
+            result = self._check_nav_result()
+            if result is not None:
+                self.logger.info(f"Nav task complete. result={result}")
                 if result == TaskResult.SUCCEEDED:
                     self.logger.info(f"Arrived at {current_table}!")
                     with self._lock:
                         self._state = WaiterState.AT_TABLE
                         self._current_tray = self._dispatch_tray
+                        self._at_table_entered_at = time.monotonic()
                     self._on_arrived_at_table()
                 else:
                     self.logger.error(f"Navigation to {current_table} failed: {result}")
@@ -259,19 +344,32 @@ class WaiterOrchestrator:
 
         # --- AT_TABLE: wait for order_complete signal ---
         elif state == WaiterState.AT_TABLE:
+            entered_at = self._at_table_entered_at
+            if (
+                entered_at is not None
+                and not self._order_complete_event.is_set()
+                and (time.monotonic() - entered_at) > AT_TABLE_TIMEOUT_SEC
+            ):
+                self.logger.warn(
+                    f"AT_TABLE timeout ({AT_TABLE_TIMEOUT_SEC:.0f}s) "
+                    f"— auto-releasing to return home"
+                )
+                self._order_complete_event.set()
+
             if self._order_complete_event.is_set():
                 self._order_complete_event.clear()
                 self.logger.info("Order confirmed! Returning home.")
                 h = self.home_pose_raw
                 goal = make_pose(h["x"], h["y"], h["yaw"], self.navigator)
-                self.navigator.goToPose(goal)
+                self._send_goal_nonblocking(goal)
                 with self._lock:
                     self._state = WaiterState.NAVIGATING_HOME
+                    self._at_table_entered_at = None
 
         # --- NAVIGATING_HOME: poll nav completion ---
         elif state == WaiterState.NAVIGATING_HOME:
-            if self.navigator.isTaskComplete():
-                result = self.navigator.getResult()
+            result = self._check_nav_result()
+            if result is not None:
                 if result == TaskResult.SUCCEEDED:
                     self.logger.info("Returned home. Ready for next dispatch.")
                 else:
@@ -280,6 +378,7 @@ class WaiterOrchestrator:
                     self._current_table = None
                     self._current_room = None
                     self._current_tray = None
+                    self._at_table_entered_at = None
                     self._state = WaiterState.IDLE
 
     # ------------------------------------------------------------------
@@ -311,6 +410,22 @@ class WaiterOrchestrator:
         threading.Thread(
             target=self._create_room_sync, args=(room_name,), daemon=True
         ).start()
+
+    def _on_tray_status(self, msg: Int32):
+        """Handle tray-closed feedback from the ESP32. Releases AT_TABLE when
+        the closed tray matches the one we dispatched."""
+        with self._lock:
+            state = self._state
+            expected = self._current_tray
+        if state != WaiterState.AT_TABLE:
+            return
+        if expected is not None and msg.data != expected:
+            self.logger.warn(
+                f"Ignoring tray_status={msg.data}; expected tray {expected}"
+            )
+            return
+        self.logger.info(f"Tray {msg.data} closed (hardware signal); releasing AT_TABLE.")
+        self._order_complete_event.set()
 
     def _create_room_sync(self, room_name: str):
         """Create the LiveKit room (runs in a thread with its own event loop)."""
@@ -471,11 +586,18 @@ def main():
     navigator.waitUntilNav2Active(localizer=_localizer)
     orchestrator.mark_nav2_ready()
 
+    # Use a MultiThreadedExecutor so the state-machine timer, HTTP dispatches,
+    # and the nested rclpy.spin_until_future_complete() calls inside
+    # BasicNavigator.goToPose() can run concurrently without deadlocking.
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(navigator)
+
     try:
-        rclpy.spin(navigator)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         navigator.lifecycleShutdown()
         navigator.destroy_node()
         rclpy.shutdown()

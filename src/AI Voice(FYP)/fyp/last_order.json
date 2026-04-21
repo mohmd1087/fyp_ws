@@ -1,6 +1,6 @@
 {
-  "order_id": "LK-37565D8C98",
-  "created_at_unix": 1772691280,
+  "order_id": "LK-7FFE90C2E1",
+  "created_at_unix": 1776605245,
   "restaurant": {
     "name": "Saffron Garden",
     "location": "Main Boulevard, Lahore"
@@ -9,13 +9,10 @@
     "name": null,
     "phone": null
   },
-  "order_type": "dine_in",
-  "dine_in": {
-    "party_size": 2,
-    "table_number": null
-  },
+  "order_type": "takeaway",
+  "dine_in": null,
   "preferences": {
-    "spice_level": "medium",
+    "spice_level": "mild",
     "allergies": null,
     "notes": null
   },
@@ -25,17 +22,30 @@
       "name": "Chicken Tikka",
       "unit_price": 720,
       "qty": 1,
-      "modifications": "medium spice",
+      "modifications": null,
       "allergens": [],
       "category": "bbq",
       "line_total": 720
+    },
+    {
+      "item_id": "kunafa",
+      "name": "Kunafa",
+      "unit_price": 890,
+      "qty": 1,
+      "modifications": null,
+      "allergens": [
+        "dairy",
+        "gluten"
+      ],
+      "category": "desserts",
+      "line_total": 890
     }
   ],
   "totals": {
-    "subtotal": 720,
-    "service_charge": 72,
+    "subtotal": 1610,
+    "service_charge": 161,
     "service_rate": 0.1,
-    "total": 792,
+    "total": 1771,
     "currency": "PKR"
   },
   "status": "confirmed"

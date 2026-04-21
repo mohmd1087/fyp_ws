@@ -30,6 +30,12 @@
  * Transport:
  *   Serial (recommended first): set_microros_transports()
  *   WiFi UDP (optional): set_microros_wifi_transports(...)
+ *
+ * Tray link:
+ *   The second (tray-controller) ESP32 is reached over ESP-NOW peer-to-peer
+ *   radio — no GPIO wires. On /waiter/tray_cmd we send a TrayPacket{OPEN_CMD},
+ *   and on its return TrayPacket{CLOSED_ACK} we publish /waiter/tray_status.
+ *   Set TRAY_ESP_MAC below before flashing.
  */
 
 #include <micro_ros_arduino.h>
@@ -38,6 +44,9 @@
 #include <string.h>
 #include <math.h>
 #include <Wire.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 
 #include <rcl/rcl.h>
 #include <rcl/error_handling.h>
@@ -53,13 +62,35 @@
 #define USE_WIFI 0  // 0 = Serial USB, 1 = WiFi UDP
 
 #if USE_WIFI
-  #include <WiFi.h>
   // *** CHANGE THESE TO YOUR WIFI NETWORK ***
   char WIFI_SSID[] = "Munim's Pixel";       // <-- your WiFi network name
   char WIFI_PASS[] = "gotohelll";    // <-- your WiFi password
   char AGENT_IP[]  = "10.50.232.81";   // <-- your laptop/PC IP on Faculty WiFi
   const uint16_t AGENT_PORT = 8888;
+  // IMPORTANT: when USE_WIFI=1, ESP-NOW must use the AP's channel. Update
+  // ESPNOW_CHANNEL below to match your AP and make sure the tray ESP matches.
 #endif
+
+// ===================== ESP-NOW LINK TO TRAY ESP32 =====================
+// Replaces the old GPIO wires between the two boards (tray1/tray2/done). The
+// two ESPs talk peer-to-peer over the WiFi radio — no router, no IP stack.
+//
+// TODO: paste the tray ESP's MAC address here (run the MAC-print sketch once).
+// Format: 6 hex bytes, e.g. { 0xA4, 0xCF, 0x12, 0x34, 0x56, 0x78 }.
+static uint8_t TRAY_ESP_MAC[6] = { 0xB0, 0xB2, 0x1C, 0xA8, 0x52, 0x50 };
+
+#define ESPNOW_CHANNEL       1    // must match the tray ESP's channel
+#define ESPNOW_MAX_RETRIES   3
+#define ESPNOW_RETRY_GAP_MS  50
+
+#define MSG_TRAY_OPEN_CMD    1
+#define MSG_TRAY_CLOSED_ACK  2
+
+typedef struct __attribute__((packed)) {
+  uint8_t  msg_type;   // MSG_TRAY_OPEN_CMD or MSG_TRAY_CLOSED_ACK
+  uint8_t  tray_id;    // 1 or 2
+  uint32_t seq;        // monotonic per-sender counter
+} TrayPacket;
 
 // ===================== ROBOT GEOMETRY =====================
 #define WHEEL_SEPARATION  0.435f   // meters (front wheel center-to-center, measured)
@@ -85,12 +116,8 @@
 #define FR_ENC_A 32
 #define FR_ENC_B 33
 
-// ===================== TRAY GPIO PINS =====================
-// These pins signal the second (motor-controller) ESP32 to open a tray.
-// Tray 1 → GPIO 4, Tray 2 → GPIO 5. HIGH = open tray.
-#define TRAY1_PIN 4
-#define TRAY2_PIN 5
-#define TRAY_SIGNAL_DURATION_MS 5000  // keep HIGH for 5 seconds
+// Tray commands & closed-acks now travel over ESP-NOW (see TRAY_ESP_MAC above),
+// so no GPIO pins are used for the inter-ESP link anymore.
 
 // ===================== IMU (MPU6050) =====================
 #define IMU_I2C_ADDR  0x68
@@ -110,6 +137,28 @@
 #define MAX_PWM        255
 #define MIN_PWM        120     // overcome stiction (tune)
 #define MAX_CMD_SPEED_MPS 0.5f // scaling for cmd_vel -> PWM (tune)
+
+// ===================== BATTERY VOLTAGE SENSING =====================
+// GPIO36 reads scaled battery via 1/5 voltage divider on the PCB.
+// Same formula as the standalone test sketch:
+//   v_bat = (raw/4095) * V_REF * V_DIV * V_CAL
+#define VOLT_PIN      36
+#define V_REF         3.3f
+#define V_DIV         5.0f
+#define V_CAL         1.3044f
+// V_NOMINAL = "normal" battery (11 V) — PWM is scaled by V_NOMINAL / V_measured
+// so the robot behaves the same at 11 V and at full charge (~13 V).
+#define V_NOMINAL     11.0f
+#define V_COMP_MIN    0.6f      // don't scale below 60% (low-batt safeguard)
+#define V_COMP_MAX    1.0f      // never boost above 100% (full PWM at/below nominal)
+#define VBAT_EMA_A    0.05f     // low-pass filter alpha on ADC reading
+
+// ===================== VELOCITY RAMPING (soft start/stop) =====================
+#define RAMP_TICK_MS        20     // 50 Hz ramp update
+#define MAX_LINEAR_ACCEL    0.06f  // m/s^2 — reaches 0.12 m/s in ~2s (smooth start)
+#define MAX_LINEAR_DECEL    0.15f  // m/s^2 — stops from 0.12 m/s in ~0.8s (quicker stop)
+#define MAX_ANGULAR_ACCEL   0.15f  // rad/s^2 — reaches 0.3 rad/s in ~2s (smooth rotation)
+#define MAX_ANGULAR_DECEL   0.3f   // rad/s^2 — stops rotation in ~1s
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 2
@@ -132,6 +181,7 @@ AgentState agent_state = WAITING_AGENT;
 // ===================== micro-ROS objects =====================
 rcl_publisher_t odom_publisher;
 rcl_publisher_t imu_publisher;
+rcl_publisher_t tray_status_publisher;
 rcl_subscription_t cmd_vel_subscriber;
 rcl_subscription_t tray_cmd_subscriber;
 
@@ -139,6 +189,7 @@ nav_msgs__msg__Odometry odom_msg;
 sensor_msgs__msg__Imu imu_msg;
 geometry_msgs__msg__Twist cmd_vel_msg;
 std_msgs__msg__Int32 tray_cmd_msg;
+std_msgs__msg__Int32 tray_status_msg;
 
 rclc_executor_t executor;
 rclc_support_t support;
@@ -163,11 +214,28 @@ unsigned long last_cmd_vel_time = 0;
 float target_linear_x = 0.0f;
 float target_angular_z = 0.0f;
 
+// Ramping state (current = what's actually applied to motors)
+float current_linear_x  = 0.0f;
+float current_angular_z = 0.0f;
+unsigned long last_ramp_time = 0;
+
 const double METERS_PER_TICK = (2.0 * M_PI * WHEEL_RADIUS) / (double)ENCODER_TICKS_PER_REV;
 
-// ===================== Tray signal state =====================
-unsigned long tray_signal_start = 0;
-bool tray_signal_active = false;
+// ===================== Tray link state (ESP-NOW) =====================
+// Last tray commanded via /waiter/tray_cmd (1 or 2). Used to validate CLOSED_ACK.
+volatile int last_commanded_tray = 0;
+
+// Monotonic sequence numbers for the two directions.
+volatile uint32_t tx_seq = 0;
+volatile uint32_t last_rx_ack_seq = 0;   // for dedup on the receive side
+
+// Inter-task flag: set from ESP-NOW receive callback, consumed by main loop
+// (avoids calling rcl_publish from the WiFi task).
+volatile int pending_tray_status_publish = 0;
+
+// TX status from the most recent esp_now_send call (set by OnDataSent callback).
+volatile bool espnow_last_send_ok = false;
+volatile bool espnow_send_done    = false;
 
 // ===================== IMU bias =====================
 float gyro_bias_x = 0, gyro_bias_y = 0, gyro_bias_z = 0;
@@ -204,6 +272,28 @@ void setup_motor_pins() {
   pwmSetupPin(M4_RPWM); pwmSetupPin(M4_LPWM);
 }
 
+// Battery voltage (filtered) and PWM compensation scale.
+float g_vbat = V_NOMINAL;
+float g_pwm_scale = 1.0f;
+
+void setup_vbat() {
+  pinMode(VOLT_PIN, INPUT);
+  analogSetAttenuation(ADC_11db);
+  // Prime filter with an initial sample.
+  int raw = analogRead(VOLT_PIN);
+  g_vbat = (raw / 4095.0f) * V_REF * V_DIV * V_CAL;
+}
+
+void update_vbat() {
+  int raw = analogRead(VOLT_PIN);
+  float v = (raw / 4095.0f) * V_REF * V_DIV * V_CAL;
+  g_vbat = (1.0f - VBAT_EMA_A) * g_vbat + VBAT_EMA_A * v;
+  float s = (g_vbat > 0.1f) ? (V_NOMINAL / g_vbat) : 1.0f;
+  if (s < V_COMP_MIN) s = V_COMP_MIN;
+  if (s > V_COMP_MAX) s = V_COMP_MAX;
+  g_pwm_scale = s;
+}
+
 void stop_all_motors() {
   motorStop(M1_RPWM, M1_LPWM);
   motorStop(M2_RPWM, M2_LPWM);
@@ -212,7 +302,7 @@ void stop_all_motors() {
 }
 
 int speed_to_pwm(float norm) {
-  int pwm = (int)(fabs(norm) * (float)MAX_PWM);
+  int pwm = (int)(fabs(norm) * (float)MAX_PWM * g_pwm_scale);
   if (pwm > 0 && pwm < MIN_PWM) pwm = MIN_PWM;
   if (pwm > MAX_PWM) pwm = MAX_PWM;
   return pwm;
@@ -252,6 +342,43 @@ void apply_cmd_vel(float linear_x, float angular_z) {
     motorStop(M1_RPWM, M1_LPWM);
     motorStop(M3_RPWM, M3_LPWM);
   }
+}
+
+// ===================== Velocity ramping (soft start/stop) =====================
+void ramp_velocity_tick() {
+  unsigned long now = millis();
+  float dt = (now - last_ramp_time) / 1000.0f;
+  if (dt < (RAMP_TICK_MS / 1000.0f)) return;
+  last_ramp_time = now;
+
+  // --- Linear: use accel rate when speeding up, decel rate when slowing down ---
+  float lin_err = target_linear_x - current_linear_x;
+  // "Decelerating" = moving toward zero (magnitude shrinking)
+  bool lin_decelerating = (fabs(target_linear_x) < fabs(current_linear_x));
+  float lin_rate = lin_decelerating ? MAX_LINEAR_DECEL : MAX_LINEAR_ACCEL;
+  float lin_step = lin_rate * dt;
+
+  if (lin_err > lin_step)
+    current_linear_x += lin_step;
+  else if (lin_err < -lin_step)
+    current_linear_x -= lin_step;
+  else
+    current_linear_x = target_linear_x;
+
+  // --- Angular: same accel/decel split for smooth rotation ---
+  float ang_err = target_angular_z - current_angular_z;
+  bool ang_decelerating = (fabs(target_angular_z) < fabs(current_angular_z));
+  float ang_rate = ang_decelerating ? MAX_ANGULAR_DECEL : MAX_ANGULAR_ACCEL;
+  float ang_step = ang_rate * dt;
+
+  if (ang_err > ang_step)
+    current_angular_z += ang_step;
+  else if (ang_err < -ang_step)
+    current_angular_z -= ang_step;
+  else
+    current_angular_z = target_angular_z;
+
+  apply_cmd_vel(current_linear_x, current_angular_z);
 }
 
 // ===================== Encoder ISRs (1x decode: A rising, B for direction) =====================
@@ -367,24 +494,80 @@ void sync_time() {
   last_time_sync = millis();
 }
 
+// ===================== ESP-NOW link =====================
+void espnow_on_send(const wifi_tx_info_t* tx_info, esp_now_send_status_t status) {
+  (void)tx_info;
+  espnow_last_send_ok = (status == ESP_NOW_SEND_SUCCESS);
+  espnow_send_done    = true;
+}
+
+void espnow_on_recv(const esp_now_recv_info* info, const uint8_t* data, int len) {
+  (void)info;
+  if (len != (int)sizeof(TrayPacket)) return;
+  TrayPacket pkt;
+  memcpy(&pkt, data, sizeof(pkt));
+
+  if (pkt.msg_type != MSG_TRAY_CLOSED_ACK) return;
+  if (pkt.tray_id != 1 && pkt.tray_id != 2) return;
+
+  // Dedup: ignore repeats with the same-or-older seq.
+  if (pkt.seq != 0 && pkt.seq == last_rx_ack_seq) return;
+  last_rx_ack_seq = pkt.seq;
+
+  if ((int)pkt.tray_id != last_commanded_tray) return;
+
+  // Stash the tray_id in the message and ask the main loop to publish. Doing
+  // rcl_publish from the WiFi task is unsafe.
+  tray_status_msg.data = pkt.tray_id;
+  pending_tray_status_publish = 1;
+}
+
+bool espnow_send_with_retry(const TrayPacket& pkt) {
+  for (int attempt = 0; attempt < ESPNOW_MAX_RETRIES; attempt++) {
+    espnow_send_done    = false;
+    espnow_last_send_ok = false;
+    esp_err_t rc = esp_now_send(TRAY_ESP_MAC, (const uint8_t*)&pkt, sizeof(pkt));
+    if (rc == ESP_OK) {
+      // Wait briefly for the TX-status callback.
+      unsigned long t0 = millis();
+      while (!espnow_send_done && (millis() - t0) < 50) { delay(1); }
+      if (espnow_last_send_ok) return true;
+    }
+    delay(ESPNOW_RETRY_GAP_MS);
+  }
+  return false;
+}
+
+void setup_espnow() {
+  WiFi.mode(WIFI_STA);
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+  if (esp_now_init() != ESP_OK) return;
+  esp_now_register_send_cb(espnow_on_send);
+  esp_now_register_recv_cb(espnow_on_recv);
+
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, TRAY_ESP_MAC, 6);
+  peer.channel = ESPNOW_CHANNEL;
+  peer.encrypt = false;
+  if (!esp_now_is_peer_exist(TRAY_ESP_MAC)) {
+    esp_now_add_peer(&peer);
+  }
+}
+
 // ===================== Callbacks =====================
 void tray_cmd_callback(const void* msgin) {
   const std_msgs__msg__Int32* msg = (const std_msgs__msg__Int32*)msgin;
-  // Reset both pins first
-  digitalWrite(TRAY1_PIN, LOW);
-  digitalWrite(TRAY2_PIN, LOW);
+  if (msg->data != 1 && msg->data != 2) return;
 
-  if (msg->data == 1) {
-    digitalWrite(TRAY1_PIN, HIGH);
-    tray_signal_active = true;
-    tray_signal_start = millis();
-  } else if (msg->data == 2) {
-    digitalWrite(TRAY2_PIN, HIGH);
-    tray_signal_active = true;
-    tray_signal_start = millis();
-  } else {
-    tray_signal_active = false;
-  }
+  last_commanded_tray = (int)msg->data;
+
+  TrayPacket pkt;
+  pkt.msg_type = MSG_TRAY_OPEN_CMD;
+  pkt.tray_id  = (uint8_t)msg->data;
+  pkt.seq      = ++tx_seq;
+  (void)espnow_send_with_retry(pkt);  // log/retry handled inside; orchestrator
+                                      // timeout catches total delivery failure.
 }
 
 void cmd_vel_callback(const void* msgin) {
@@ -392,7 +575,7 @@ void cmd_vel_callback(const void* msgin) {
   target_linear_x = msg->linear.x;
   target_angular_z = msg->angular.z;
   last_cmd_vel_time = millis();
-  apply_cmd_vel(target_linear_x, target_angular_z);
+  // Motor output handled by ramp_velocity_tick() for smooth acceleration
 }
 
 // ===================== Timers =====================
@@ -545,6 +728,11 @@ bool create_entities() {
     ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
     "/imu/data"));
 
+  RCCHECK(rclc_publisher_init_default(
+    &tray_status_publisher, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+    "/waiter/tray_status"));
+
   RCCHECK(rclc_subscription_init_default(
     &cmd_vel_subscriber, &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
@@ -584,6 +772,7 @@ void destroy_entities() {
 
   rcl_publisher_fini(&odom_publisher, &node);
   rcl_publisher_fini(&imu_publisher, &node);
+  rcl_publisher_fini(&tray_status_publisher, &node);
   rcl_subscription_fini(&cmd_vel_subscriber, &node);
   rcl_subscription_fini(&tray_cmd_subscriber, &node);
   rcl_timer_fini(&odom_timer);
@@ -599,15 +788,15 @@ void setup() {
   Serial.begin(115200);
 
   setup_motor_pins();
+  setup_vbat();
   setup_encoders();
   setup_imu();
   stop_all_motors();
 
-  // Tray signal pins (output to second ESP32)
-  pinMode(TRAY1_PIN, OUTPUT);
-  pinMode(TRAY2_PIN, OUTPUT);
-  digitalWrite(TRAY1_PIN, LOW);
-  digitalWrite(TRAY2_PIN, LOW);
+  // ESP-NOW link to tray ESP32 (replaces the old tray GPIO wires).
+  // IMPORTANT: must be set up BEFORE micro-ROS WiFi transport (if USE_WIFI=1),
+  // because micro-ROS WiFi init also configures the WiFi radio.
+  setup_espnow();
 
 #if USE_WIFI
   set_microros_wifi_transports(WIFI_SSID, WIFI_PASS, AGENT_IP, AGENT_PORT);
@@ -649,17 +838,25 @@ void loop() {
       if (agent_state == AGENT_CONNECTED) {
         RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1)));
 
+        // Soft stop on cmd_vel timeout — ramp decelerates smoothly
         if (millis() - last_cmd_vel_time > CMD_VEL_TIMEOUT_MS) {
-          stop_all_motors();
           target_linear_x = 0.0f;
           target_angular_z = 0.0f;
         }
 
-        // Auto-off tray signal after duration
-        if (tray_signal_active && (millis() - tray_signal_start > TRAY_SIGNAL_DURATION_MS)) {
-          digitalWrite(TRAY1_PIN, LOW);
-          digitalWrite(TRAY2_PIN, LOW);
-          tray_signal_active = false;
+        // Velocity ramping: smoothly move current velocity toward target
+        ramp_velocity_tick();
+
+        // Battery voltage tracking @ 10 Hz — drives PWM compensation in speed_to_pwm()
+        EXECUTE_EVERY_N_MS(100, update_vbat(););
+
+        // Tray-closed ack from the tray ESP arrived via ESP-NOW. The WiFi-task
+        // callback stashed the tray_id and set this flag; publish here where
+        // it's safe to call into rclc.
+        if (pending_tray_status_publish) {
+          pending_tray_status_publish = 0;
+          rcl_publish(&tray_status_publisher, &tray_status_msg, NULL);
+          last_commanded_tray = 0;
         }
 
         if (millis() - last_time_sync > TIME_SYNC_INTERVAL_MS) {
@@ -669,13 +866,14 @@ void loop() {
       break;
 
     case AGENT_DISCONNECTED:
-      stop_all_motors();
+      stop_all_motors();  // emergency hard-stop (safety)
       target_linear_x = 0.0f;
       target_angular_z = 0.0f;
+      current_linear_x = 0.0f;
+      current_angular_z = 0.0f;
       time_synced = false;
-      digitalWrite(TRAY1_PIN, LOW);
-      digitalWrite(TRAY2_PIN, LOW);
-      tray_signal_active = false;
+      last_commanded_tray = 0;
+      pending_tray_status_publish = 0;
 
       destroy_entities();
       agent_state = WAITING_AGENT;

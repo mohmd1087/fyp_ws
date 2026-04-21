@@ -30,9 +30,16 @@ source /home/muhammad/fyp_ws/install/setup.bash
 #	What	Command
 1	Robot Nav2:	ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
 2	Orchestrator:	ros2 launch fyp_bringup waiter.launch.py
-3	Voice Agent:	python agent.py dev
-4	Dashboard:	npm run dev
-5	Mic/Speaker bridge:	python local_participant.py
+3	Dashboard:	npm run dev
+
+# Voice agent — pick ONE of the two paths below:
+
+# Path A (LiveKit bridge): WebRTC-based, two processes
+A1	Voice Agent (worker):	python agent.py dev
+A2	Mic/Speaker bridge:	python local_participant.py
+
+# Path B (Console mode, orchestrator-triggered): no WebRTC, single supervisor
+B1	Voice Agent supervisor:	python run_on_at_table.py
 
 
 LOCALIZATION_MODE=rtabmap ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav

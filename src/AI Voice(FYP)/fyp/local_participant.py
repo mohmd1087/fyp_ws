@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import queue
+import threading
 import urllib.request
 
 import numpy as np
@@ -88,7 +89,7 @@ async def run_session(room_name: str):
     log.info("Mic track published")
 
     # Queue to bridge sounddevice callback thread → async loop
-    mic_queue: queue.Queue[bytes] = queue.Queue(maxsize=50)
+    mic_queue: queue.Queue[bytes] = queue.Queue(maxsize=200)
 
     def mic_callback(indata, frames, time_info, status):
         if status:
@@ -105,24 +106,81 @@ async def run_session(room_name: str):
     mic_stream.start()
 
     # --- Room → Speaker (subscribe) ---
+    # Callback-driven output with a jitter-tolerant depth target. PortAudio's
+    # own thread pulls int16 samples from `speaker_buffer` at the card's rate,
+    # independent of the asyncio loop. We gate playback on a minimum depth
+    # (JITTER_FLOOR) so a brief network stall doesn't drain the buffer and
+    # cause the choppy "cut off, come back" pattern. Playback only starts once
+    # ~400 ms has buffered; if the depth later falls below ~150 ms we hold by
+    # emitting silence until it refills, rather than stuttering.
+    BYTES_PER_SEC = SAMPLE_RATE * 2 * NUM_CHANNELS  # int16 mono @ 48kHz
+    TARGET_DEPTH_BYTES = int(BYTES_PER_SEC * 0.75)   # ~750 ms — generous cushion for jittery links
+    JITTER_FLOOR_BYTES = int(BYTES_PER_SEC * 0.30)   # ~300 ms hold threshold
+
+    speaker_buffer = bytearray()
+    speaker_lock = threading.Lock()
+    speaker_state = {"playing": False, "last_log": 0.0}
+
+    # Pre-roll silence so the stream starts cleanly; real audio must still
+    # accumulate to TARGET_DEPTH_BYTES before the gate opens.
+    speaker_buffer.extend(b"\x00" * TARGET_DEPTH_BYTES)
+
+    def speaker_callback(outdata, frames, time_info, status):
+        if status:
+            log.debug(f"Speaker status: {status}")
+        needed = frames * 2 * NUM_CHANNELS
+        with speaker_lock:
+            have = len(speaker_buffer)
+
+            # Gate closed → holding to rebuild depth. Play silence.
+            if not speaker_state["playing"]:
+                if have >= TARGET_DEPTH_BYTES:
+                    speaker_state["playing"] = True
+                else:
+                    outdata[:] = b"\x00" * needed
+                    return
+
+            # Gate open: normal playback, but if we drop below the floor,
+            # pause and wait for depth to rebuild rather than stuttering.
+            if have < JITTER_FLOOR_BYTES:
+                speaker_state["playing"] = False
+                outdata[:] = b"\x00" * needed
+                return
+
+            if have >= needed:
+                outdata[:] = bytes(speaker_buffer[:needed])
+                del speaker_buffer[:needed]
+            else:
+                outdata[:have] = bytes(speaker_buffer[:have])
+                outdata[have:] = b"\x00" * (needed - have)
+                speaker_buffer.clear()
+
     speaker_stream = sd.RawOutputStream(
         samplerate=SAMPLE_RATE,
         channels=NUM_CHANNELS,
         dtype="int16",
-        blocksize=FRAME_SIZE,
+        blocksize=0,
+        latency="high",
+        callback=speaker_callback,
     )
     speaker_stream.start()
 
     async def play_remote_audio(track: rtc.AudioTrack):
-        """Async iterator that plays incoming remote audio frames to speakers."""
+        """Feed remote audio frames into the speaker ring buffer. Non-blocking.
+        Also logs buffer depth every 2s so jitter events are visible."""
+        import time as _time
         audio_stream = rtc.AudioStream(track, sample_rate=SAMPLE_RATE, num_channels=NUM_CHANNELS)
         async for event in audio_stream:
-            frame = event.frame
-            audio_data = np.frombuffer(frame.data, dtype=np.int16)
-            try:
-                speaker_stream.write(audio_data)
-            except sd.PortAudioError:
-                break
+            frame_bytes = bytes(event.frame.data)
+            with speaker_lock:
+                speaker_buffer.extend(frame_bytes)
+                depth = len(speaker_buffer)
+                now = _time.monotonic()
+                if now - speaker_state["last_log"] >= 2.0:
+                    depth_ms = int(depth * 1000 / BYTES_PER_SEC)
+                    state = "PLAY" if speaker_state["playing"] else "HOLD"
+                    log.info(f"[spk] depth={depth_ms}ms state={state}")
+                    speaker_state["last_log"] = now
 
     speaker_tasks: list[asyncio.Task] = []
 
@@ -145,37 +203,63 @@ async def run_session(room_name: str):
                 task = asyncio.create_task(play_remote_audio(pub.track))
                 speaker_tasks.append(task)
 
-    # --- Main loop: push mic frames + poll orchestrator state ---
-    try:
-        while True:
-            # Push any available mic frames to LiveKit
-            frames_pushed = 0
-            while not mic_queue.empty() and frames_pushed < 10:
-                data = mic_queue.get_nowait()
-                frame = rtc.AudioFrame(
-                    data=data,
-                    sample_rate=SAMPLE_RATE,
-                    num_channels=NUM_CHANNELS,
-                    samples_per_channel=FRAME_SIZE,
-                )
-                await audio_source.capture_frame(frame)
-                frames_pushed += 1
+    # --- Concurrent tasks: mic pump + orchestrator watchdog ---
+    # Each runs at its own cadence so mic frames can't starve waiting on HTTP,
+    # and HTTP can't starve waiting on audio. The speaker side is already
+    # independent (PortAudio callback pulls directly from its buffer).
+    disconnect_event = asyncio.Event()
 
-            # Check orchestrator state periodically
+    async def mic_pump():
+        # Blocking Queue.get runs off the event loop, so frames flow the moment
+        # sounddevice's callback enqueues them — no batching, no polling.
+        frame_count = 0
+        import time as _time
+        last_log = _time.monotonic()
+        while True:
+            data = await asyncio.to_thread(mic_queue.get)
+            if data is None:
+                return
+            frame = rtc.AudioFrame(
+                data=data,
+                sample_rate=SAMPLE_RATE,
+                num_channels=NUM_CHANNELS,
+                samples_per_channel=FRAME_SIZE,
+            )
+            await audio_source.capture_frame(frame)
+            frame_count += 1
+            now = _time.monotonic()
+            if now - last_log >= 2.0:
+                samples = np.frombuffer(data, dtype=np.int16)
+                rms = int(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) if len(samples) else 0
+                log.info(f"[mic] {frame_count} frames pushed in last {now-last_log:.1f}s, last frame RMS={rms}")
+                frame_count = 0
+                last_log = now
+
+    async def watch_orchestrator():
+        while not disconnect_event.is_set():
             status = await asyncio.to_thread(poll_status)
             if status is None:
                 log.warning("Orchestrator unreachable, disconnecting...")
-                break
+                disconnect_event.set()
+                return
             if status.get("state") != "AT_TABLE" or status.get("current_room") != room_name:
                 log.info(f"State changed to '{status.get('state')}', disconnecting...")
-                break
-
+                disconnect_event.set()
+                return
             await asyncio.sleep(POLL_INTERVAL)
+
+    mic_task = asyncio.create_task(mic_pump())
+    watch_task = asyncio.create_task(watch_orchestrator())
+    try:
+        await disconnect_event.wait()
     finally:
         mic_stream.stop()
         mic_stream.close()
         speaker_stream.stop()
         speaker_stream.close()
+        mic_queue.put(None)  # unblock mic_pump's blocking Queue.get
+        mic_task.cancel()
+        watch_task.cancel()
         for t in speaker_tasks:
             t.cancel()
         await room.disconnect()

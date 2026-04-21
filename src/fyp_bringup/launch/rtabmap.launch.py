@@ -76,7 +76,7 @@ def generate_launch_description():
             'subscribe_rgb': True,
             'subscribe_scan': False,
             # Map database
-            'database_path': os.path.expanduser('~/.ros/rtabmap.db'),
+            'database_path': os.path.expanduser('~/fyp_ws/src/fyp_bringup/maps/rtab_final_demo.db'),
             # Mapping vs localization
             'Mem/IncrementalMemory': 'true' if mapping_mode else 'false',
             'Mem/InitWMWithAllNodes': 'false' if mapping_mode else 'true',
@@ -105,6 +105,8 @@ def generate_launch_description():
             'Grid/MaxObstacleHeight': '1.5',
             'Grid/NormalsSegmentation': 'true',
             'Grid/3D': 'false',
+            'Grid/RayTracing': 'true',
+            'Grid/MinClusterSize': '10',
             'map_always_update': True,       # bool — ros2 param, not rtabmap string param
             'map_empty_ray_tracing': True,   # bool — ros2 param, not rtabmap string param
         }],
