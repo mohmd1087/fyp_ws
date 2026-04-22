@@ -74,3 +74,11 @@ export const GetOrdersQuerySchema = z.object({
 export const UpdateOrderSchema = z.object({
   status: z.enum(["PENDING", "COMPLETED"]),
 });
+
+// --- POST /api/orders/[id]/append-items (follow-up append flow) ---
+
+export const AppendItemsSchema = z.object({
+  items: z.array(OrderItemSchema).min(1),
+});
+
+export type AppendItemsInput = z.infer<typeof AppendItemsSchema>;

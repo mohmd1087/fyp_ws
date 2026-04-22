@@ -16,6 +16,22 @@ from livekit.plugins import google, noise_cancellation
 # Load env vars from .env.local (LIVEKIT_... and GOOGLE_API_KEY)
 load_dotenv(".env.local")
 
+# Agent behavior mode, set by run_on_at_table.py when spawning:
+#   "order"    — fresh guest, greet and take an order (default)
+#   "followup" — food was just delivered, ask if they need anything else
+AGENT_MODE = os.environ.get("AGENT_MODE", "order").lower()
+
+# In follow-up mode the supervisor injects the delivered order's id so the
+# agent can append items to the same order instead of creating a new one.
+FOLLOWUP_ORDER_ID = os.environ.get("FOLLOWUP_ORDER_ID") or None
+
+# Pre-warm gate. When the supervisor spawns the agent during
+# NAVIGATING_TO_TABLE it sets AGENT_ARMED=0 and AGENT_ARM_FILE to a temp path.
+# The agent polls for that file's existence; the supervisor creates it when
+# the robot reaches AT_TABLE. Avoids any signal API (which requires main thread).
+AGENT_ARMED = os.environ.get("AGENT_ARMED", "1") != "0"
+AGENT_ARM_FILE = os.environ.get("AGENT_ARM_FILE", "")
+
 RESTAURANT_INFO = {
     "name": "Saffron Garden",
     "location": "Main Boulevard, Lahore",
@@ -185,6 +201,65 @@ def _normalize_spice_level(s: Any) -> str:
     return "not_specified"
 
 
+def _normalize_items(
+    items_in: List[Any],
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Turn the raw `items` field from a tool call into enriched line-items.
+
+    Accepts either strings (menu item names) or objects ({item_id, qty,
+    modifications}). Returns (enriched_items, error_or_None).
+    On error returns ([], {"error": ...}) so callers can propagate directly.
+    Shared between finalize_order (new order) and append_to_order (follow-up).
+    """
+    clean_items: List[Dict[str, Any]] = []
+    for it in items_in:
+        if isinstance(it, str):
+            item_id = _find_item_id_by_name(it)
+            if not item_id:
+                return [], {
+                    "error": f"'{it}' is not on our menu. Please choose from the menu items.",
+                    "hint_top_items": [
+                        {"item_id": k, "name": v["name"]}
+                        for k, v in list(FLAT_MENU.items())[:6]
+                    ],
+                }
+            clean_items.append({"item_id": item_id, "qty": 1, "modifications": None})
+        elif isinstance(it, dict):
+            # Gemini occasionally emits keys wrapped in extra quotes.
+            it = {k.strip("'\""): v for k, v in it.items()}
+            item_id = str(it.get("item_id", "")).strip()
+            if item_id not in FLAT_MENU:
+                return [], {
+                    "error": f"Invalid item_id '{item_id}'. Use get_menu to pick valid items."
+                }
+            qty = int(it.get("qty", 1) or 1)
+            if qty < 1:
+                return [], {"error": f"Quantity must be >= 1 for item_id '{item_id}'."}
+            mods = _none_if_string_none(it.get("modifications"))
+            clean_items.append({"item_id": item_id, "qty": qty, "modifications": mods})
+        else:
+            return [], {"error": "Invalid items format. Items must be objects or strings."}
+
+    enriched: List[Dict[str, Any]] = []
+    for it in clean_items:
+        item_id = it["item_id"]
+        qty = int(it["qty"])
+        unit_price = int(FLAT_MENU[item_id]["price"])
+        enriched.append(
+            {
+                "item_id": item_id,
+                "name": FLAT_MENU[item_id]["name"],
+                "unit_price": unit_price,
+                "qty": qty,
+                "modifications": it.get("modifications"),
+                "allergens": FLAT_MENU[item_id].get("allergens", []),
+                "category": FLAT_MENU[item_id]["category"],
+                "line_total": unit_price * qty,
+            }
+        )
+    return enriched, None
+
+
 def _find_item_id_by_name(name: str) -> Optional[str]:
     # Exact + fuzzy match against menu names
     name_l = name.strip().lower()
@@ -196,6 +271,45 @@ def _find_item_id_by_name(name: str) -> Optional[str]:
     if close:
         return name_to_id[close[0]]
     return None
+
+
+# Shared item-array shape (accept objects or bare name strings)
+_ITEMS_ARRAY_SCHEMA = {
+    "type": "array",
+    "items": {
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "string"},
+                    "qty": {"type": "integer", "minimum": 1, "default": 1},
+                    "modifications": {"type": ["string", "null"]},
+                },
+                "required": ["item_id"],
+            },
+            {"type": "string"},
+        ]
+    },
+}
+
+
+APPEND_TO_ORDER_SCHEMA = {
+    "name": "append_to_order",
+    "description": (
+        "FOLLOW-UP ONLY. Use this after the customer's food has been delivered "
+        "and they ask for additional items. Appends items to the SAME order_id "
+        "that was just delivered. Do NOT call finalize_order in follow-up mode.\n"
+        "TOOL INPUT RULE:\n"
+        "- items MUST be a list of objects like: "
+        "[{\"item_id\":\"mint_margarita\",\"qty\":1,\"modifications\":null}]\n"
+        "- Always use item_id from get_menu, never pass bare item names."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"items": _ITEMS_ARRAY_SCHEMA},
+        "required": ["items"],
+    },
+}
 
 
 # Raw schema tool to avoid Pydantic crashes when model sends wrong shapes
@@ -247,28 +361,47 @@ FINALIZE_ORDER_SCHEMA = {
 }
 
 
+ORDER_PROMPT = (
+    "Your name is AMORA and you are a highly professional restaurant waiter taking voice orders.\n"
+    "Style: warm, polite, efficient, and confident.\n"
+    "OPENING: As soon as the session starts, greet the guest warmly as AMORA, a waiter at "
+    "Saffron Garden. Do NOT wait for them to speak first — start the conversation yourself. "
+    "Welcome them, ask if it's dine-in, takeaway, or delivery, ask about any allergies, "
+    "and then ask what they'd like to order.\n"
+    "Goals:\n"
+    "1) Answer questions about the restaurant and menu and answer in the language you are talked to in.\n"
+    "2) Take the order conversationally and collect: order_type (dine_in/takeaway/delivery), "
+    "party_size (if dine_in), table_number (if dine_in), allergies, spice_level.\n"
+    "3) Never invent menu items. Only use items returned by get_menu/get_item_details.\n"
+    "4) Before calling finalize_order, repeat the order (item names + qty + modifications) "
+    "and ask for confirmation.\n"
+    "5) When calling finalize_order, ALWAYS use item_id from the menu (not item names).\n"
+    "If the user asks for something not on the menu, apologize and offer close alternatives.\n"
+    "Keep spoken output short and natural.\n"
+)
+
+FOLLOWUP_PROMPT = (
+    "Your name is AMORA, a waiter at Saffron Garden. The customer's food has "
+    "just been delivered to their table.\n"
+    "OPENING: Greet them briefly by name of the restaurant and ask if they need "
+    "anything else — answer in the language they use.\n"
+    "Decision:\n"
+    "- If they say no / they're fine / they decline, call decline_followup() "
+    "  immediately, then end the call warmly (e.g. 'Enjoy your meal!').\n"
+    "- If they want something else, take the additional items using "
+    "  get_menu/get_item_details, confirm them, then call append_to_order "
+    "  with the new items (ALWAYS use item_id from the menu). This adds the "
+    "  items to the SAME order that was just delivered.\n"
+    "IMPORTANT: In follow-up mode you must NEVER call finalize_order. That "
+    "would create a separate order. Use append_to_order for new items.\n"
+    "Keep it short and friendly — they already have their food in front of them.\n"
+)
+
+
 class RestaurantWaiter(Agent):
     def __init__(self) -> None:
-        super().__init__(
-            instructions=(
-                "Your name is AMORA and you are a highly professional restaurant waiter taking voice orders.\n"
-                "Style: warm, polite, efficient, and confident.\n"
-                "OPENING: As soon as the session starts, greet the guest warmly as AMORA, a waiter at "
-                "Saffron Garden. Do NOT wait for them to speak first — start the conversation yourself. "
-                "Welcome them, ask if it's dine-in, takeaway, or delivery, ask about any allergies, "
-                "and then ask what they'd like to order.\n"
-                "Goals:\n"
-                "1) Answer questions about the restaurant and menu and answer in the language you are talked to in.\n"
-                "2) Take the order conversationally and collect: order_type (dine_in/takeaway/delivery), "
-                "party_size (if dine_in), table_number (if dine_in), allergies, spice_level.\n"
-                "3) Never invent menu items. Only use items returned by get_menu/get_item_details.\n"
-                "4) Before calling finalize_order, repeat the order (item names + qty + modifications) "
-                "and ask for confirmation.\n"
-                "5) When calling finalize_order, ALWAYS use item_id from the menu (not item names).\n"
-                "If the user asks for something not on the menu, apologize and offer close alternatives.\n"
-                "Keep spoken output short and natural.\n"
-            )
-        )
+        instructions = FOLLOWUP_PROMPT if AGENT_MODE == "followup" else ORDER_PROMPT
+        super().__init__(instructions=instructions)
 
     @function_tool(name="get_restaurant_info", description="Get restaurant location, hours, cuisine, and policies.")
     async def get_restaurant_info(self, context: RunContext) -> Dict[str, Any]:
@@ -343,6 +476,41 @@ class RestaurantWaiter(Agent):
         except Exception as exc:
             print(f"[orchestrator] Could not reach orchestrator: {exc}")
 
+    @function_tool(
+        name="decline_followup",
+        description=(
+            "Call this when the customer confirms they do NOT need anything "
+            "else after their food delivery. This ends the voice session and "
+            "sends the robot back to its home position. Use only in follow-up "
+            "mode, after the food has already been delivered."
+        ),
+    )
+    async def decline_followup(self, context: RunContext) -> Dict[str, Any]:
+        base_url = os.getenv("ORCHESTRATOR_CALLBACK_URL")
+        room_name = ""
+        try:
+            room_name = context.session.room.name or ""
+        except Exception as exc:
+            print(f"[orchestrator] Could not resolve room name: {exc}")
+
+        if base_url:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(
+                        f"{base_url}/decline_followup",
+                        json={"room_name": room_name},
+                    )
+                    if 200 <= resp.status_code < 300:
+                        print(f"[orchestrator] Declined follow-up for room '{room_name}'")
+                    else:
+                        print(f"[orchestrator] /decline_followup failed: {resp.status_code} {resp.text[:200]}")
+            except Exception as exc:
+                print(f"[orchestrator] Could not reach orchestrator: {exc}")
+        else:
+            print("[orchestrator] ORCHESTRATOR_CALLBACK_URL not set, skipping decline signal.")
+
+        return {"ok": True, "message": "Have a lovely meal!"}
+
     @function_tool(raw_schema=FINALIZE_ORDER_SCHEMA)
     async def finalize_order(self, raw_arguments: Dict[str, Any], context: RunContext) -> Dict[str, Any]:
         # Normalize top-level fields
@@ -355,51 +523,9 @@ class RestaurantWaiter(Agent):
         allergies = _none_if_string_none(raw_arguments.get("allergies"))
         spice_level = _normalize_spice_level(raw_arguments.get("spice_level"))
 
-        items_in = raw_arguments.get("items") or []
-        clean_items: List[Dict[str, Any]] = []
-
-        # Accept either strings or objects
-        for it in items_in:
-            if isinstance(it, str):
-                item_id = _find_item_id_by_name(it)
-                if not item_id:
-                    return {
-                        "error": f"'{it}' is not on our menu. Please choose from the menu items.",
-                        "hint_top_items": [{"item_id": k, "name": v["name"]} for k, v in list(FLAT_MENU.items())[:6]],
-                    }
-                clean_items.append({"item_id": item_id, "qty": 1, "modifications": None})
-            elif isinstance(it, dict):
-                # Normalize keys: Gemini sometimes passes keys with extra quotes like "'item_id'"
-                it = {k.strip("'\""): v for k, v in it.items()}
-                item_id = str(it.get("item_id", "")).strip()
-                if item_id not in FLAT_MENU:
-                    return {"error": f"Invalid item_id '{item_id}'. Use get_menu to pick valid items."}
-                qty = int(it.get("qty", 1) or 1)
-                if qty < 1:
-                    return {"error": f"Quantity must be >= 1 for item_id '{item_id}'."}
-                mods = _none_if_string_none(it.get("modifications"))
-                clean_items.append({"item_id": item_id, "qty": qty, "modifications": mods})
-            else:
-                return {"error": "Invalid items format. Items must be objects or strings."}
-
-        # Build enriched lines
-        enriched_items: List[Dict[str, Any]] = []
-        for it in clean_items:
-            item_id = it["item_id"]
-            qty = int(it["qty"])
-            unit_price = int(FLAT_MENU[item_id]["price"])
-            enriched_items.append(
-                {
-                    "item_id": item_id,
-                    "name": FLAT_MENU[item_id]["name"],
-                    "unit_price": unit_price,
-                    "qty": qty,
-                    "modifications": it.get("modifications"),
-                    "allergens": FLAT_MENU[item_id].get("allergens", []),
-                    "category": FLAT_MENU[item_id]["category"],
-                    "line_total": unit_price * qty,
-                }
-            )
+        enriched_items, err = _normalize_items(raw_arguments.get("items") or [])
+        if err:
+            return err
 
         totals = _calc_totals(enriched_items)
 
@@ -457,13 +583,68 @@ class RestaurantWaiter(Agent):
         # Keep tool response SMALL (reduces chance of 1011 around tool responses)
         return {"ok": True, "order_id": order_json["order_id"], "total": totals["total"], "currency": totals["currency"]}
 
+    @function_tool(raw_schema=APPEND_TO_ORDER_SCHEMA)
+    async def append_to_order(
+        self, raw_arguments: Dict[str, Any], context: RunContext
+    ) -> Dict[str, Any]:
+        """Follow-up flow: add items to the just-delivered order (same order_id)."""
+        order_id = FOLLOWUP_ORDER_ID
+        if not order_id:
+            return {
+                "error": (
+                    "No order_id available in follow-up context. I cannot "
+                    "append without the original order reference."
+                )
+            }
+
+        enriched_items, err = _normalize_items(raw_arguments.get("items") or [])
+        if err:
+            return err
+        if not enriched_items:
+            return {"error": "No items to append."}
+
+        pretty = json.dumps(enriched_items, indent=2, ensure_ascii=False)
+        print(
+            f"\n===== APPEND TO ORDER {order_id} =====\n" + pretty +
+            "\n========================================\n"
+        )
+
+        dashboard_url = os.getenv("DASHBOARD_API_URL")
+        agent_key = os.getenv("DASHBOARD_AGENT_KEY")
+        if dashboard_url and agent_key:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(
+                        f"{dashboard_url}/api/orders/{order_id}/append-items",
+                        json={"items": enriched_items},
+                        headers={"X-Agent-Key": agent_key},
+                    )
+                    if 200 <= resp.status_code < 300:
+                        print(f"[dashboard] Appended {len(enriched_items)} item(s) to {order_id}")
+                    else:
+                        print(
+                            f"[dashboard] append failed: {resp.status_code} "
+                            f"{resp.text[:200]}"
+                        )
+            except Exception as exc:
+                print(f"[dashboard] append unreachable: {exc}")
+        else:
+            print("[dashboard] DASHBOARD_API_URL or DASHBOARD_AGENT_KEY not set, skipping append.")
+
+        # Release the robot so it navigates home, same as finalize_order.
+        await self._notify_orchestrator_order_complete(context, order_id)
+
+        return {"ok": True, "order_id": order_id, "appended": len(enriched_items)}
+
 
 server = AgentServer()
 
 
 @server.rtc_session()
 async def waiter_agent(ctx: agents.JobContext):
-    # Use the beta realtime model + explicit model name (current LiveKit recipe style)
+    # Heavy LLM construction happens here — this is the part we want to finish
+    # while the robot is still driving. After this line the agent is ready to
+    # talk; we just need to wait for the arm file before actually starting.
     session = AgentSession(
         llm=google.beta.realtime.RealtimeModel(
             model="gemini-3.1-flash-live-preview",
@@ -473,6 +654,17 @@ async def waiter_agent(ctx: agents.JobContext):
             # enable_affective_dialog=True,  # optional
         )
     )
+
+    # Pre-warm gate: poll for sentinel file written by the supervisor.
+    if not AGENT_ARMED and AGENT_ARM_FILE:
+        print(f"[agent] Pre-warmed. Polling for arm file: {AGENT_ARM_FILE}")
+        while not os.path.exists(AGENT_ARM_FILE):
+            await asyncio.sleep(0.2)
+        print("[agent] Arm file detected — starting session.")
+        try:
+            os.remove(AGENT_ARM_FILE)
+        except OSError:
+            pass
 
     await session.start(
         room=ctx.room,

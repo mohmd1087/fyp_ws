@@ -63,6 +63,7 @@ class WaiterState(Enum):
     IDLE = "IDLE"
     NAVIGATING_TO_TABLE = "NAVIGATING_TO_TABLE"
     AT_TABLE = "AT_TABLE"
+    AT_TABLE_FOLLOWUP = "AT_TABLE_FOLLOWUP"
     NAVIGATING_HOME = "NAVIGATING_HOME"
 
 
@@ -120,7 +121,9 @@ class WaiterOrchestrator:
         self._dispatch_event = threading.Event()
         self._dispatch_table_id: str | None = None
         self._dispatch_tray: int | None = None
+        self._dispatch_order_id: str | None = None
         self._current_tray: int | None = None
+        self._current_order_id: str | None = None
         self._order_complete_event = threading.Event()
         self._at_table_entered_at: float | None = None
 
@@ -191,8 +194,9 @@ class WaiterOrchestrator:
             payload = json.loads(data) if isinstance(data, str) else data
             table_id = payload.get("table_id")
             tray = payload.get("tray")  # None if not specified (original buttons)
+            order_id = payload.get("order_id")  # None for non-delivery dispatches
             if table_id:
-                result = self.handle_dispatch(table_id, tray=tray)
+                result = self.handle_dispatch(table_id, tray=tray, order_id=order_id)
                 self.logger.info(f"Remote dispatch result: {result}")
         except Exception as e:
             self.logger.error(f"Failed to handle remote dispatch: {e}")
@@ -334,6 +338,7 @@ class WaiterOrchestrator:
                     with self._lock:
                         self._state = WaiterState.AT_TABLE
                         self._current_tray = self._dispatch_tray
+                        self._current_order_id = self._dispatch_order_id
                         self._at_table_entered_at = time.monotonic()
                     self._on_arrived_at_table()
                 else:
@@ -366,6 +371,30 @@ class WaiterOrchestrator:
                     self._state = WaiterState.NAVIGATING_HOME
                     self._at_table_entered_at = None
 
+        # --- AT_TABLE_FOLLOWUP: wait for order_complete OR decline_followup ---
+        elif state == WaiterState.AT_TABLE_FOLLOWUP:
+            entered_at = self._at_table_entered_at
+            if (
+                entered_at is not None
+                and not self._order_complete_event.is_set()
+                and (time.monotonic() - entered_at) > AT_TABLE_TIMEOUT_SEC
+            ):
+                self.logger.warn(
+                    f"AT_TABLE_FOLLOWUP timeout ({AT_TABLE_TIMEOUT_SEC:.0f}s) "
+                    f"— auto-releasing to return home"
+                )
+                self._order_complete_event.set()
+
+            if self._order_complete_event.is_set():
+                self._order_complete_event.clear()
+                self.logger.info("Follow-up complete! Returning home.")
+                h = self.home_pose_raw
+                goal = make_pose(h["x"], h["y"], h["yaw"], self.navigator)
+                self._send_goal_nonblocking(goal)
+                with self._lock:
+                    self._state = WaiterState.NAVIGATING_HOME
+                    self._at_table_entered_at = None
+
         # --- NAVIGATING_HOME: poll nav completion ---
         elif state == WaiterState.NAVIGATING_HOME:
             result = self._check_nav_result()
@@ -378,6 +407,7 @@ class WaiterOrchestrator:
                     self._current_table = None
                     self._current_room = None
                     self._current_tray = None
+                    self._current_order_id = None
                     self._at_table_entered_at = None
                     self._state = WaiterState.IDLE
 
@@ -412,11 +442,16 @@ class WaiterOrchestrator:
         ).start()
 
     def _on_tray_status(self, msg: Int32):
-        """Handle tray-closed feedback from the ESP32. Releases AT_TABLE when
-        the closed tray matches the one we dispatched."""
+        """Handle tray-closed feedback from the ESP32.
+
+        Delivery (tray dispatched): AT_TABLE → AT_TABLE_FOLLOWUP so the voice
+        agent can ask 'anything else?'.
+        Non-delivery (defensive): release AT_TABLE to return home.
+        """
         with self._lock:
             state = self._state
             expected = self._current_tray
+            room_name = self._current_room
         if state != WaiterState.AT_TABLE:
             return
         if expected is not None and msg.data != expected:
@@ -424,8 +459,23 @@ class WaiterOrchestrator:
                 f"Ignoring tray_status={msg.data}; expected tray {expected}"
             )
             return
-        self.logger.info(f"Tray {msg.data} closed (hardware signal); releasing AT_TABLE.")
-        self._order_complete_event.set()
+
+        if expected is not None:
+            self.logger.info(
+                f"Tray {msg.data} closed; transitioning AT_TABLE → AT_TABLE_FOLLOWUP."
+            )
+            with self._lock:
+                self._state = WaiterState.AT_TABLE_FOLLOWUP
+                self._at_table_entered_at = time.monotonic()
+            if room_name and HAS_LIVEKIT and self.lk_url and self.lk_api_key:
+                threading.Thread(
+                    target=self._create_room_sync, args=(room_name,), daemon=True
+                ).start()
+        else:
+            self.logger.info(
+                f"Tray {msg.data} closed (no tray dispatched); releasing AT_TABLE."
+            )
+            self._order_complete_event.set()
 
     def _create_room_sync(self, room_name: str):
         """Create the LiveKit room (runs in a thread with its own event loop)."""
@@ -458,7 +508,12 @@ class WaiterOrchestrator:
     # ------------------------------------------------------------------
     # HTTP dispatch / order_complete handlers (called from HTTP thread)
     # ------------------------------------------------------------------
-    def handle_dispatch(self, table_id: str, tray: int | None = None) -> dict:
+    def handle_dispatch(
+        self,
+        table_id: str,
+        tray: int | None = None,
+        order_id: str | None = None,
+    ) -> dict:
         with self._lock:
             if not self._nav2_ready:
                 return {"ok": False, "error": "Nav2 is not ready yet"}
@@ -470,23 +525,35 @@ class WaiterOrchestrator:
                 }
             self._dispatch_table_id = table_id
             self._dispatch_tray = tray
+            self._dispatch_order_id = order_id
             self._dispatch_event.set()
-            return {"ok": True, "table_id": table_id, "tray": tray}
+            return {"ok": True, "table_id": table_id, "tray": tray, "order_id": order_id}
 
     def handle_order_complete(self, room_name: str, order_id: str) -> dict:
         with self._lock:
-            if self._state != WaiterState.AT_TABLE:
+            if self._state not in (WaiterState.AT_TABLE, WaiterState.AT_TABLE_FOLLOWUP):
                 return {"ok": False, "error": f"Not at table ({self._state.value})"}
             self.logger.info(f"Order {order_id} complete in room {room_name}")
             self._order_complete_event.set()
             return {"ok": True}
 
+    def handle_decline_followup(self, room_name: str) -> dict:
+        with self._lock:
+            if self._state != WaiterState.AT_TABLE_FOLLOWUP:
+                return {"ok": False, "error": f"Not in follow-up ({self._state.value})"}
+            self.logger.info(f"Customer declined follow-up in room {room_name}")
+            self._order_complete_event.set()
+            return {"ok": True}
+
     def get_status(self) -> dict:
         with self._lock:
+            mode = "delivery" if self._current_tray is not None else "order"
             return {
                 "state": self._state.value,
                 "current_table": self._current_table,
                 "current_room": self._current_room,
+                "mode": mode,
+                "order_id": self._current_order_id,
                 "tables": list(self.table_poses_raw.keys()),
             }
 
@@ -534,13 +601,21 @@ class _HTTPHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "table_id required"}, 400)
                 return
             tray = data.get("tray")  # None if not specified (original buttons)
-            result = self.orchestrator.handle_dispatch(table_id, tray=tray)
+            order_id = data.get("order_id")  # None for non-delivery dispatches
+            result = self.orchestrator.handle_dispatch(
+                table_id, tray=tray, order_id=order_id
+            )
             self._send_json(result, 200 if result["ok"] else 409)
 
         elif self.path == "/order_complete":
             room_name = data.get("room_name", "")
             order_id = data.get("order_id", "")
             result = self.orchestrator.handle_order_complete(room_name, order_id)
+            self._send_json(result, 200 if result["ok"] else 409)
+
+        elif self.path == "/decline_followup":
+            room_name = data.get("room_name", "")
+            result = self.orchestrator.handle_decline_followup(room_name)
             self._send_json(result, 200 if result["ok"] else 409)
 
         else:

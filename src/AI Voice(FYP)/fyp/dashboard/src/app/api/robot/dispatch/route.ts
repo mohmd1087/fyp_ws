@@ -21,12 +21,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "tray must be 1 or 2" }, { status: 400 });
   }
 
+  // order_id is optional — only present when dispatching a specific delivery.
+  // Used by the follow-up flow so the voice agent can append items to the
+  // existing order instead of creating a new one.
+  const orderId = typeof body?.order_id === "string" ? body.order_id : undefined;
+
   const bus = getRealtimeBus();
   await bus.publish("robot", "robot.dispatch", {
     table_id: tableId,
     ...(tray !== undefined && { tray }),
+    ...(orderId !== undefined && { order_id: orderId }),
     dispatched_at: new Date().toISOString(),
   });
 
-  return NextResponse.json({ ok: true, table_id: tableId, ...(tray !== undefined && { tray }) });
+  return NextResponse.json({
+    ok: true,
+    table_id: tableId,
+    ...(tray !== undefined && { tray }),
+    ...(orderId !== undefined && { order_id: orderId }),
+  });
 }
