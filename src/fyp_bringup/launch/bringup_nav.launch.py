@@ -23,6 +23,11 @@ Arguments:
 Environment Variables:
   LOCALIZATION_MODE: 'amcl' (default) or 'rtabmap'
   RTABMAP_MAPPING:   'true' to build new map (default: false = localize only)
+  RTABMAP_MAP:       map filename under src/fyp_bringup/maps/<name>.db
+                     (default: rtab_final_demo). Lets you keep multiple maps
+                     side-by-side and pick one per launch.
+  CONTROLLER:        'rpp' (default) or 'dwb' — local planner selection for rtabmap mode.
+                     dwb enables true dynamic obstacle avoidance via trajectory sampling.
 """
 
 import os
@@ -49,6 +54,14 @@ def generate_launch_description():
     # Localization mode from environment variable (resolved at launch time)
     localization_mode = os.environ.get('LOCALIZATION_MODE', 'amcl').lower()
     use_rtabmap = (localization_mode == 'rtabmap')
+
+    # Controller (local planner) selection — only affects rtabmap param file today
+    controller = os.environ.get('CONTROLLER', 'rpp').lower()
+    if controller not in ('rpp', 'dwb'):
+        raise RuntimeError(
+            f"CONTROLLER must be 'rpp' or 'dwb', got '{controller}'"
+        )
+    use_dwb = (controller == 'dwb')
 
     # Launch arguments
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
@@ -182,11 +195,13 @@ def generate_launch_description():
             ]
         )
 
-    # Nav2 params file depends on localization mode
-    nav2_params = os.path.join(
-        nav2_pkg, 'params',
-        'nav2_params_rtabmap.yaml' if use_rtabmap else 'nav2_params_real.yaml'
-    )
+    # Nav2 params file depends on localization mode and controller selection.
+    # rtabmap mode supports both RPP (default) and DWB via CONTROLLER env var.
+    if use_rtabmap:
+        nav2_params_name = 'nav2_params_rtabmap_dwb.yaml' if use_dwb else 'nav2_params_rtabmap.yaml'
+    else:
+        nav2_params_name = 'nav2_params_real.yaml'
+    nav2_params = os.path.join(nav2_pkg, 'params', nav2_params_name)
 
     # Navigation launch (delayed further for localization to start)
     navigation_launch = TimerAction(

@@ -1,6 +1,6 @@
 {
-  "order_id": "LK-CBBCB0EB02",
-  "created_at_unix": 1776863928,
+  "order_id": "LK-3DF80B5EE7",
+  "created_at_unix": 1777110246,
   "restaurant": {
     "name": "Saffron Garden",
     "location": "Main Boulevard, Lahore"
@@ -21,21 +21,24 @@
   },
   "items": [
     {
-      "item_id": "mint_margarita",
-      "name": "Mint Margarita",
-      "unit_price": 390,
+      "item_id": "kunafa",
+      "name": "Kunafa",
+      "unit_price": 890,
       "qty": 1,
       "modifications": null,
-      "allergens": [],
-      "category": "drinks",
-      "line_total": 390
+      "allergens": [
+        "dairy",
+        "gluten"
+      ],
+      "category": "desserts",
+      "line_total": 890
     }
   ],
   "totals": {
-    "subtotal": 390,
-    "service_charge": 39,
+    "subtotal": 890,
+    "service_charge": 89,
     "service_rate": 0.1,
-    "total": 429,
+    "total": 979,
     "currency": "PKR"
   },
   "status": "confirmed"

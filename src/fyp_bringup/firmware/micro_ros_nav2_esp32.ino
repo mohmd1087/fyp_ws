@@ -135,7 +135,7 @@ typedef struct __attribute__((packed)) {
 #define PWM_FREQ       1000
 #define PWM_RESOLUTION 8
 #define MAX_PWM        255
-#define MIN_PWM        120     // overcome stiction (tune)
+#define MIN_PWM        90      // stiction breakaway (lower = smoother low-speed motion, less PWM step at velocity onset)
 #define MAX_CMD_SPEED_MPS 0.5f // scaling for cmd_vel -> PWM (tune)
 
 // ===================== BATTERY VOLTAGE SENSING =====================
@@ -153,12 +153,16 @@ typedef struct __attribute__((packed)) {
 #define V_COMP_MAX    1.0f      // never boost above 100% (full PWM at/below nominal)
 #define VBAT_EMA_A    0.05f     // low-pass filter alpha on ADC reading
 
-// ===================== VELOCITY RAMPING (soft start/stop) =====================
+// ===================== VELOCITY RAMPING (trapezoidal, simple & stable) =====================
+// Fixed accel/decel rates — velocity ramps linearly toward target. No overshoot.
 #define RAMP_TICK_MS        20     // 50 Hz ramp update
-#define MAX_LINEAR_ACCEL    0.06f  // m/s^2 — reaches 0.12 m/s in ~2s (smooth start)
-#define MAX_LINEAR_DECEL    0.15f  // m/s^2 — stops from 0.12 m/s in ~0.8s (quicker stop)
-#define MAX_ANGULAR_ACCEL   0.15f  // rad/s^2 — reaches 0.3 rad/s in ~2s (smooth rotation)
-#define MAX_ANGULAR_DECEL   0.3f   // rad/s^2 — stops rotation in ~1s
+#define MAX_LINEAR_ACCEL    0.15f  // m/s^2 — reaches 0.15 m/s in ~1s
+#define MAX_LINEAR_DECEL    0.25f  // m/s^2 — stops from 0.15 m/s in ~0.6s
+#define MAX_ANGULAR_ACCEL   0.35f  // rad/s^2 — reaches 0.3 rad/s in ~0.85s
+#define MAX_ANGULAR_DECEL   0.50f  // rad/s^2 — stops rotation in ~0.6s
+// Jerk limits retained as macros (unused by trapezoidal ramp) in case we re-enable S-curve later
+#define MAX_LINEAR_JERK     0.20f
+#define MAX_ANGULAR_JERK    0.60f
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 2
@@ -344,39 +348,63 @@ void apply_cmd_vel(float linear_x, float angular_z) {
   }
 }
 
-// ===================== Velocity ramping (soft start/stop) =====================
+// ===================== Velocity ramping (two-stage, jerk-bounded) =====================
+// Stage 1: low-pass filter on the *target*. Smooths step-changes from DWB so the
+//   velocity setpoint moves continuously rather than jumping each control tick.
+//   Critically: this smoothed setpoint can NEVER produce overshoot because it's
+//   pure exponential approach (asymptotic, can't cross target).
+// Stage 2: accel-limited tracking of the smoothed setpoint. Bounded slew rate.
+//
+// Why this avoids the previous oscillation bug: there's no projection logic, no
+// sign-flipping accel commands, no asymmetric peak switching — just two well-known
+// stable filters in series. Output velocity profile is smooth and monotonic toward
+// any new target.
+//
+// Tuning: TARGET_FILTER_TAU_S sets how soft the velocity onset/release feels.
+//   Larger = smoother but more lag. 0.4s is gentle; 0.2s is more responsive.
+static inline float step_axis(float target, float current_vel,
+                              float &smoothed_target, float tau_s,
+                              float peak_accel, float peak_decel,
+                              float dt) {
+  // Stage 1: first-order low-pass on target.
+  // smoothed += (target - smoothed) * (dt / (tau + dt))
+  float alpha = dt / (tau_s + dt);
+  smoothed_target += (target - smoothed_target) * alpha;
+
+  // Stage 2: slew-rate-limited tracking of smoothed target.
+  float err = smoothed_target - current_vel;
+  bool decelerating = (fabsf(smoothed_target) < fabsf(current_vel));
+  float rate = decelerating ? peak_decel : peak_accel;
+  float step = rate * dt;
+
+  float new_vel;
+  if (err >  step)       new_vel = current_vel + step;
+  else if (err < -step)  new_vel = current_vel - step;
+  else                   new_vel = smoothed_target;
+
+  return new_vel;
+}
+
+// Filter time constants — bigger τ → smoother (and slower to respond)
+#define TARGET_FILTER_TAU_LIN_S  0.35f
+#define TARGET_FILTER_TAU_ANG_S  0.30f
+
+// Smoothed setpoints (Stage 1 outputs); persist across calls.
+static float smoothed_target_linear  = 0.0f;
+static float smoothed_target_angular = 0.0f;
+
 void ramp_velocity_tick() {
   unsigned long now = millis();
   float dt = (now - last_ramp_time) / 1000.0f;
   if (dt < (RAMP_TICK_MS / 1000.0f)) return;
   last_ramp_time = now;
 
-  // --- Linear: use accel rate when speeding up, decel rate when slowing down ---
-  float lin_err = target_linear_x - current_linear_x;
-  // "Decelerating" = moving toward zero (magnitude shrinking)
-  bool lin_decelerating = (fabs(target_linear_x) < fabs(current_linear_x));
-  float lin_rate = lin_decelerating ? MAX_LINEAR_DECEL : MAX_LINEAR_ACCEL;
-  float lin_step = lin_rate * dt;
-
-  if (lin_err > lin_step)
-    current_linear_x += lin_step;
-  else if (lin_err < -lin_step)
-    current_linear_x -= lin_step;
-  else
-    current_linear_x = target_linear_x;
-
-  // --- Angular: same accel/decel split for smooth rotation ---
-  float ang_err = target_angular_z - current_angular_z;
-  bool ang_decelerating = (fabs(target_angular_z) < fabs(current_angular_z));
-  float ang_rate = ang_decelerating ? MAX_ANGULAR_DECEL : MAX_ANGULAR_ACCEL;
-  float ang_step = ang_rate * dt;
-
-  if (ang_err > ang_step)
-    current_angular_z += ang_step;
-  else if (ang_err < -ang_step)
-    current_angular_z -= ang_step;
-  else
-    current_angular_z = target_angular_z;
+  current_linear_x  = step_axis(target_linear_x,  current_linear_x,
+                                smoothed_target_linear,  TARGET_FILTER_TAU_LIN_S,
+                                MAX_LINEAR_ACCEL,  MAX_LINEAR_DECEL,  dt);
+  current_angular_z = step_axis(target_angular_z, current_angular_z,
+                                smoothed_target_angular, TARGET_FILTER_TAU_ANG_S,
+                                MAX_ANGULAR_ACCEL, MAX_ANGULAR_DECEL, dt);
 
   apply_cmd_vel(current_linear_x, current_angular_z);
 }
@@ -575,6 +603,16 @@ void cmd_vel_callback(const void* msgin) {
   target_linear_x = msg->linear.x;
   target_angular_z = msg->angular.z;
   last_cmd_vel_time = millis();
+
+  // Normal zero commands (e.g. teleop key release, Nav2 goal end) are handled
+  // by the S-curve ramp in ramp_velocity_tick() — it decelerates smoothly and
+  // stops cleanly. The previous "emergency-stop bypass" that zero'd current_vel
+  // and slammed the motor driver was causing mechanical kickback: chassis
+  // momentum + abrupt H-bridge brake produced a visible reverse lurch, and
+  // teleop's repeating forward command relaunched it → forward-reverse loop.
+  //
+  // True emergency stop on cmd_vel TIMEOUT is still enforced in the main loop
+  // (CMD_VEL_TIMEOUT_MS), which smoothly ramps target to zero.
   // Motor output handled by ramp_velocity_tick() for smooth acceleration
 }
 
@@ -871,6 +909,8 @@ void loop() {
       target_angular_z = 0.0f;
       current_linear_x = 0.0f;
       current_angular_z = 0.0f;
+      smoothed_target_linear  = 0.0f;
+      smoothed_target_angular = 0.0f;
       time_synced = false;
       last_commanded_tray = 0;
       pending_tray_status_publish = 0;

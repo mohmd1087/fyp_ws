@@ -2,13 +2,23 @@
 """
 RTAB-Map RGB-D localization/mapping launch file.
 
-Two modes controlled by RTABMAP_MAPPING env var:
-  RTABMAP_MAPPING=true  → build a new map (drive/walk around the environment)
-  RTABMAP_MAPPING=false (default) → localize against existing map (~/.ros/rtabmap.db)
+Env vars:
+  RTABMAP_MAPPING=true          build a new map (drive/walk around the environment)
+  RTABMAP_MAPPING=false (default)  localize against existing map
+  RTABMAP_MAP=<name> (default: rtab_final_demo)
+                                 map filename under src/fyp_bringup/maps/<name>.db
 
 Usage (launched from bringup_nav.launch.py via LOCALIZATION_MODE=rtabmap):
-  Mapping:    LOCALIZATION_MODE=rtabmap RTABMAP_MAPPING=true  ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
-  Navigation: LOCALIZATION_MODE=rtabmap                       ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
+  Build a new map named "finalest_demo":
+    LOCALIZATION_MODE=rtabmap RTABMAP_MAPPING=true RTABMAP_MAP=finalest_demo \
+      ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
+
+  Navigate using that map:
+    LOCALIZATION_MODE=rtabmap RTABMAP_MAP=finalest_demo \
+      ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
+
+  Navigate using the original map (default):
+    LOCALIZATION_MODE=rtabmap ros2 launch fyp_bringup bringup_nav.launch.py mode:=nav
 
 For handheld mapping (no robot needed):
   ros2 launch fyp_bringup rtabmap_handheld_mapping.launch.py
@@ -26,7 +36,14 @@ def generate_launch_description():
 
     mapping_mode = os.environ.get('RTABMAP_MAPPING', 'false').lower() == 'true'
     mode_str = 'MAPPING (new map)' if mapping_mode else 'LOCALIZATION (existing map)'
-    print(f'[rtabmap.launch.py] Starting in {mode_str} mode')
+
+    # Map name is configurable so you can keep multiple maps side-by-side.
+    # Stored under src/fyp_bringup/maps/<RTABMAP_MAP>.db
+    map_name = os.environ.get('RTABMAP_MAP', 'rtab_final_demo')
+    db_path = os.path.expanduser(
+        f'~/fyp_ws/src/fyp_bringup/maps/{map_name}.db'
+    )
+    print(f'[rtabmap.launch.py] Starting in {mode_str} mode — db: {db_path}')
 
     # ========================================
     # Visual Odometry node (rgbd_odometry)
@@ -41,16 +58,25 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'frame_id': 'base_footprint',
-            'odom_frame_id': 'vo_odom',   # separate frame — EKF fuses it, not TF
-            'publish_tf': False,           # EKF owns odom→base_footprint TF
+            'odom_frame_id': 'vo_odom',
+            'publish_tf': False,
             'wait_for_transform': 0.2,
             'approx_sync': True,
-            'approx_sync_max_interval': 0.05,
-            'queue_size': 10,
+            # Tightened: was 0.05 → log showed RGB/depth drift up to 0.038s being
+            # accepted. 0.02 rejects spurious bad sync pairs that pollute VO graph.
+            'approx_sync_max_interval': 0.02,
+            # Was 10 → reduced so old frames get dropped instead of queued. Long
+            # queue caused publish delay to climb to 180ms (2-3× the actual
+            # processing time), which lagged the EKF correction behind wheel odom
+            # and contributed to motion jerks during shim/DWB transitions.
+            'queue_size': 2,
             'Reg/Force3DoF': 'true',
             'Vis/MinInliers': '10',
             'Odom/Strategy': '0',
             'Odom/ResetCountdown': '1',
+            # Skip frames during fast motion — prevents bad feature matches when
+            # the camera rotates quickly during shim spin or DWB heading change
+            'Odom/ImageDecimation': '2',
         }],
         remappings=[
             ('rgb/image',       '/camera/color/image_raw'),
@@ -76,15 +102,19 @@ def generate_launch_description():
             'subscribe_rgb': True,
             'subscribe_scan': False,
             # Map database
-            'database_path': os.path.expanduser('~/fyp_ws/src/fyp_bringup/maps/rtab_final_demo.db'),
+            'database_path': db_path,
             # Mapping vs localization
             'Mem/IncrementalMemory': 'true' if mapping_mode else 'false',
             'Mem/InitWMWithAllNodes': 'false' if mapping_mode else 'true',
             # 2D robot — lock roll/pitch to prevent 3D drift
             'Reg/Force3DoF': 'true',
-            # Visual odometry update thresholds (update on small movements)
-            'RGBD/AngularUpdate': '0.01',
-            'RGBD/LinearUpdate': '0.01',
+            # Visual odometry update thresholds. Raised from 0.01 → only accept
+            # new keyframes after meaningful motion. Prevents the graph from
+            # ingesting bad frames captured during fast transitions (shim → DWB
+            # handoff, RotateToGoal phase) where motion blur and RGB/depth
+            # de-sync produce low-quality matches and pollute localization.
+            'RGBD/AngularUpdate': '0.05',     # ~3°
+            'RGBD/LinearUpdate': '0.03',      # 3 cm
             'RGBD/OptimizeFromGraphEnd': 'false',
             # Feature detection tuned for Astra Pro indoor
             'Vis/MinInliers': '12',
