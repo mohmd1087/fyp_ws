@@ -60,29 +60,30 @@ def generate_launch_description():
             'frame_id': 'base_footprint',
             'odom_frame_id': 'vo_odom',
             'publish_tf': False,
-            'wait_for_transform': 0.2,
+            'wait_for_transform': 1.0,     # was 0.2 — tolerate odom TF lag under load
             'approx_sync': True,
             # Tightened: was 0.05 → log showed RGB/depth drift up to 0.038s being
             # accepted. 0.02 rejects spurious bad sync pairs that pollute VO graph.
-            'approx_sync_max_interval': 0.02,
+            'approx_sync_max_interval': 0.05,
             # Was 10 → reduced so old frames get dropped instead of queued. Long
             # queue caused publish delay to climb to 180ms (2-3× the actual
             # processing time), which lagged the EKF correction behind wheel odom
             # and contributed to motion jerks during shim/DWB transitions.
             'queue_size': 2,
             'Reg/Force3DoF': 'true',
-            'Vis/MinInliers': '10',
+            'Vis/MinInliers': '10',        # original — strict enough to reject false matches
             'Odom/Strategy': '0',
-            'Odom/ResetCountdown': '1',
-            # Skip frames during fast motion — prevents bad feature matches when
-            # the camera rotates quickly during shim spin or DWB heading change
+            'Odom/ResetCountdown': '1',    # original — auto-reset on persistent failure
             'Odom/ImageDecimation': '2',
+            'Odom/LinearUpdate': '0.02',
+            'Odom/AngularUpdate': '0.02',
         }],
         remappings=[
             ('rgb/image',       '/camera/color/image_raw'),
             ('rgb/camera_info', '/camera/color/camera_info'),
             ('depth/image',     '/camera/depth/image_raw'),
             ('odom',            '/vo/odometry'),
+            ('imu',             '/rtabmap/imu_unused'),
         ],
     )
 
@@ -97,7 +98,7 @@ def generate_launch_description():
             'frame_id': 'base_footprint',
             'odom_frame_id': 'odom',
             'map_frame_id': 'map',
-            # Sensor setup — RGB-D, no laser scan
+            # Sensor setup — RGB-D only, no laser scan
             'subscribe_depth': True,
             'subscribe_rgb': True,
             'subscribe_scan': False,
@@ -108,21 +109,20 @@ def generate_launch_description():
             'Mem/InitWMWithAllNodes': 'false' if mapping_mode else 'true',
             # 2D robot — lock roll/pitch to prevent 3D drift
             'Reg/Force3DoF': 'true',
-            # Visual odometry update thresholds. Raised from 0.01 → only accept
-            # new keyframes after meaningful motion. Prevents the graph from
-            # ingesting bad frames captured during fast transitions (shim → DWB
-            # handoff, RotateToGoal phase) where motion blur and RGB/depth
-            # de-sync produce low-quality matches and pollute localization.
             'RGBD/AngularUpdate': '0.05',     # ~3°
             'RGBD/LinearUpdate': '0.03',      # 3 cm
             'RGBD/OptimizeFromGraphEnd': 'false',
-            # Feature detection tuned for Astra Pro indoor
-            'Vis/MinInliers': '12',
+            # Conservative loop closure thresholds — strict enough to reject
+            # false positives that would teleport the robot's localization
+            # to the wrong part of the map.
+            'Vis/MinInliers': '12',           # original strict value
+            'Vis/MaxFeatures': '400',
             'Kp/MaxFeatures': '400',
             # Publish map→odom TF so Nav2 can use it
             'publish_tf': True,
             'tf_delay': 0.05,
-            'tf_tolerance': 0.1,
+            'tf_tolerance': 0.5,           # was 0.1 — tolerate odom TF lag under load
+            'wait_for_transform': 1.0,     # was default 0.2 — wait longer for TF before dropping
             # Sync RGB and depth (Astra Pro needs approx sync)
             'approx_sync': True,
             'approx_sync_max_interval': 0.1,
@@ -145,8 +145,17 @@ def generate_launch_description():
             ('rgb/camera_info', '/camera/color/camera_info'),
             ('depth/image',     '/camera/depth/image_raw'),
             ('odom',            '/odometry/filtered'),
+            # Remap RTAB-Map's IMU subscription to a dead topic — our IMU has
+            # orientation_covariance[0]=-1 (no absolute orientation) which makes
+            # RTAB-Map spam errors. EKF already fuses IMU; RTAB-Map doesn't need it.
+            ('imu',             '/rtabmap/imu_unused'),
         ],
     )
+
+    # rtabmap_viz is purely a debug GUI. It's noisy under load (TF extrapolation
+    # warnings, occasional crash) and is not required for localization or navigation.
+    # Set RTABMAP_VIZ=true to enable, default off.
+    enable_viz = os.environ.get('RTABMAP_VIZ', 'false').lower() == 'true'
 
     rtabmap_viz_node = Node(
         package='rtabmap_viz',
@@ -161,14 +170,23 @@ def generate_launch_description():
             'subscribe_odom': True,
             'approx_sync': True,
             'queue_size': 10,
+            'wait_for_transform': 1.0,
         }],
         remappings=[
             ('rgb/image',       '/camera/color/image_raw'),
             ('rgb/camera_info', '/camera/color/camera_info'),
             ('depth/image',     '/camera/depth/image_raw'),
             ('odom',            '/odometry/filtered'),
+            ('imu',             '/rtabmap/imu_unused'),
         ],
     )
+
+    nodes = [
+        rgbd_odometry_node,
+        rtabmap_node,
+    ]
+    if enable_viz:
+        nodes.append(rtabmap_viz_node)
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -176,7 +194,4 @@ def generate_launch_description():
             default_value='false',
             description='Use simulation time',
         ),
-        rgbd_odometry_node,
-        rtabmap_node,
-        rtabmap_viz_node,
-    ])
+    ] + nodes)

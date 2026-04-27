@@ -14,6 +14,7 @@ bt_navigator:
     default_server_timeout: 60           # was 20 — smooth_path was timing out before acknowledge
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
+    transform_tolerance: 1.0             # tolerate stale goal timestamps during warm-up
     default_nav_to_pose_bt_xml: /home/muhammad/fyp_ws/src/fyp_nav2/behavior_trees/navigate_to_pose_w_smoothing.xml
     default_nav_through_poses_bt_xml: /home/muhammad/fyp_ws/src/fyp_nav2/behavior_trees/navigate_to_pose_w_smoothing.xml
     navigators: ["navigate_to_pose"]
@@ -53,8 +54,8 @@ controller_server:
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: True
-      xy_goal_tolerance: 0.25            # was 0.5; firmware S-curve decel coasts ~10cm past "arrived" so keep tolerance tight
-      yaw_goal_tolerance: 0.35
+      xy_goal_tolerance: 0.40
+      yaw_goal_tolerance: 0.20
 
     # ===========================================================================
     # SEQUENTIAL "rotate → drive → rotate" navigation pattern
@@ -75,55 +76,55 @@ controller_server:
     FollowPath:
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "dwb_core::DWBLocalPlanner"
-      # Aggressive shim — fire on any heading error >10°. Together with the
-      # 5° exit threshold below, this ensures every motion segment starts
-      # with explicit alignment instead of a curved approach.
-      angular_dist_threshold: 0.35      # ~10° — always rotate first if even slightly off-axis
+      # Shim fires whenever heading error > 20° — ensures robot always pre-aligns
+      # before driving. Low enough to catch mid-path re-alignment needs,
+      # high enough to not interrupt gentle curves.
+      angular_dist_threshold: 0.5      # ~29° — rotate first before any forward motion (increased)
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.25
-      max_angular_accel: 0.25
+      rotate_to_heading_angular_vel: 0.20  # gentle rotation speed — smooth, not snappy
+      max_angular_accel: 0.08           # matches firmware MAX_ANGULAR_ACCEL exactly
       simulate_ahead_time: 1.0
-      rotate_to_heading_min_angle: 0.087 # ~5° — shim exits when nearly aligned, then DWB drives straight
+      rotate_to_heading_min_angle: 0.05  # ~3° — exit shim only when very well aligned
       # --- DWB (primary) params below ---
       debug_trajectory_details: True
       min_vel_x: 0.0
       min_vel_y: 0.0
       max_vel_x: 0.18
       max_vel_y: 0.0
-      max_vel_theta: 0.36
+      max_vel_theta: 0.25              # cap rotation speed — matches firmware gentle accel
       min_speed_xy: 0.0
       max_speed_xy: 0.18
       min_speed_theta: 0.0
-      acc_lim_x: 0.15
+      acc_lim_x: 0.15                  # matches firmware MAX_LINEAR_ACCEL
       acc_lim_y: 0.0
-      acc_lim_theta: 0.35
-      decel_lim_x: -0.25
+      acc_lim_theta: 0.08              # matches firmware MAX_ANGULAR_ACCEL
+      decel_lim_x: -0.20              # matches firmware MAX_LINEAR_DECEL
       decel_lim_y: 0.0
-      decel_lim_theta: -0.5
-      vx_samples: 10
+      decel_lim_theta: -0.15          # matches firmware MAX_ANGULAR_DECEL
+      vx_samples: 20
       vy_samples: 0
-      vtheta_samples: 20
+      vtheta_samples: 25
       sim_time: 1.5
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.40
       trans_stopped_velocity: 0.02
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.02
-      # Critic balance: PathDist (stay on path laterally) is the dominant
-      # critic during the "drive" phase. PathAlign (heading must match path
-      # heading) is reduced so DWB doesn't constantly fiddle with yaw —
-      # since the shim already aligned us, we just need to follow the line.
-      PathAlign.scale: 8.0               # was 16 — half: don't over-correct heading mid-drive
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 15.0
+      ObstacleFootprint.scale: 5.0
+      # PathDist dominates to keep robot on centerline during drive phase.
+      # PathAlign kept low — shim already pre-aligned so DWB doesn't need to
+      # constantly steer heading during straight drive.
+      PathAlign.scale: 6.0
       PathAlign.forward_point_distance: 0.3
-      PathDist.scale: 40.0               # was 32 — stronger pull to centerline
-      GoalDist.scale: 20.0
-      # RotateToGoal kicks in at goal arrival. Strong scale + low slowing_factor
-      # = robot decisively rotates to final yaw rather than nudging it via DWB
-      # forward-trajectory blending.
+      PathDist.scale: 30.0  # slightly reduced for less strict path centering
+      GoalDist.scale: 24.0
+      # RotateToGoal: very strong scale + high slowing_factor so the robot
+      # comes to a full stop, then rotates cleanly to final goal yaw.
+      # slowing_factor=5 means it decelerates to near-zero before rotating.
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 3.0
       RotateToGoal.lookahead_time: -1.0
@@ -135,6 +136,7 @@ planner_server:
   ros__parameters:
     use_sim_time: false
     expected_planner_frequency: 20.0
+    transform_tolerance: 1.0             # tolerate stale goal timestamps during warm-up
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
@@ -180,9 +182,9 @@ behavior_server:
     simulate_ahead_time: 2.0
     # aligned with firmware S-curve limits so Spin/BackUp recoveries don't
     # command faster than the ESP32 can actually ramp
-    max_rotational_vel: 0.3
+    max_rotational_vel: 0.20
     min_rotational_vel: 0.05
-    rotational_acc_lim: 0.18
+    rotational_acc_lim: 0.08      # matches firmware MAX_ANGULAR_ACCEL
 
 waypoint_follower:
   ros__parameters:
@@ -201,13 +203,12 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.18, 0.0, 0.4]
-    min_velocity: [-0.18, 0.0, -0.4]
-    # Loose limits — firmware S-curve owns the actual shaping. Smoother is effectively
-    # a pass-through + velocity_timeout safety. Keep these looser than firmware's peak
-    # accel so we don't get double-ramping (latency) or phase fighting.
-    max_accel: [1.0, 0.0, 2.0]
-    max_decel: [-1.0, 0.0, -2.0]
+    max_velocity: [0.18, 0.0, 0.25]
+    min_velocity: [-0.18, 0.0, -0.25]
+    # Smoother runs as near-passthrough — firmware S-curve owns actual ramping.
+    # Tight accel here causes double-ramping and adds seconds of startup latency.
+    max_accel: [1.0, 0.0, 1.5]
+    max_decel: [-1.0, 0.0, -1.5]
     odom_topic: /odometry/filtered
     odom_duration: 0.1
     deadband_velocity: [0.01, 0.0, 0.02]
@@ -246,7 +247,7 @@ local_costmap:
         z_resolution: 0.1
         z_voxels: 10              # 0-1.0m vertical (matches height band below)
         max_obstacle_height: 1.0
-        mark_threshold: 2         # need ≥2 voxels in a column → rejects sun flicker
+        mark_threshold: 3         # need ≥3 voxels in a column → stronger sun flicker rejection
         unknown_threshold: 15
         observation_sources: pointcloud
         pointcloud:
@@ -254,14 +255,14 @@ local_costmap:
           data_type: "PointCloud2"
           # Height band 0.25-1.0m: skips floor IR glare + ceiling lights
           max_obstacle_height: 1.0
-          min_obstacle_height: 0.25
+          min_obstacle_height: 0.40
           clearing: True
           marking: True
           raytrace_max_range: 2.5   # clearing still reaches out far so free space gets wiped
           raytrace_min_range: 0.1
           # Tightened ranges: saturated depth pixels report phantom obstacles both
           # very close (< 0.5m) and far (> 1.5m). Trust only the mid-band for marking.
-          obstacle_max_range: 1.5
+          obstacle_max_range: 1.2
           obstacle_min_range: 0.5
           # Persist observations briefly so a moving obstacle that left the FOV
           # doesn't get instantly forgotten (otherwise DWB can't dodge it).
@@ -303,12 +304,12 @@ global_costmap:
           data_type: "PointCloud2"
           # Same height + range tightening as local costmap to reject sun glare
           max_obstacle_height: 1.0
-          min_obstacle_height: 0.25
+          min_obstacle_height: 0.40
           clearing: True
           marking: True
           raytrace_max_range: 2.5
           raytrace_min_range: 0.1
-          obstacle_max_range: 1.5
+          obstacle_max_range: 1.2
           obstacle_min_range: 0.5
           observation_persistence: 0.5
 

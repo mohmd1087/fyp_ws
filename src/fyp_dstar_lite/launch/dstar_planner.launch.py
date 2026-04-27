@@ -10,7 +10,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
     lethal_threshold = LaunchConfiguration('lethal_threshold', default='253')
 
     dstar_node = Node(
@@ -27,7 +27,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('use_sim_time', default_value='true',
+        DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='Use simulation time'),
         DeclareLaunchArgument('lethal_threshold', default_value='253',
                               description='Nav2 costmap cost value treated as obstacle'),

@@ -125,6 +125,7 @@ class WaiterOrchestrator:
         self._current_tray: int | None = None
         self._current_order_id: str | None = None
         self._order_complete_event = threading.Event()
+        self._go_home_event = threading.Event()
         self._at_table_entered_at: float | None = None
 
         # State publisher
@@ -186,6 +187,7 @@ class WaiterOrchestrator:
         """Called when Pusher WebSocket connects/reconnects."""
         channel = self._pusher_client.subscribe("robot")
         channel.bind("robot.dispatch", self._on_remote_dispatch)
+        channel.bind("robot.go_home", self._on_remote_go_home)
         self.logger.info("Subscribed to Pusher 'robot' channel for remote dispatch")
 
     def _on_remote_dispatch(self, data):
@@ -200,6 +202,14 @@ class WaiterOrchestrator:
                 self.logger.info(f"Remote dispatch result: {result}")
         except Exception as e:
             self.logger.error(f"Failed to handle remote dispatch: {e}")
+
+    def _on_remote_go_home(self, data):
+        """Handle go-home command from dashboard via Pusher."""
+        try:
+            result = self.handle_go_home()
+            self.logger.info(f"Remote go_home result: {result}")
+        except Exception as e:
+            self.logger.error(f"Failed to handle remote go_home: {e}")
 
     def _publish_status_to_dashboard(self, state: str, current_table: str | None):
         """POST status to dashboard API route, which republishes via Pusher."""
@@ -312,7 +322,7 @@ class WaiterOrchestrator:
                 daemon=True,
             ).start()
 
-        # --- IDLE: check for dispatch request ---
+        # --- IDLE: check for dispatch or go-home request ---
         if state == WaiterState.IDLE:
             if self._dispatch_event.is_set():
                 self._dispatch_event.clear()
@@ -327,6 +337,14 @@ class WaiterOrchestrator:
                         self._state = WaiterState.NAVIGATING_TO_TABLE
                 else:
                     self.logger.warn(f"Unknown table_id: {table_id}")
+            elif self._go_home_event.is_set():
+                self._go_home_event.clear()
+                h = self.home_pose_raw
+                goal = make_pose(h["x"], h["y"], h["yaw"], self.navigator)
+                self.logger.info(f"Manual go-home: navigating to home ({h['x']}, {h['y']})")
+                self._send_goal_nonblocking(goal)
+                with self._lock:
+                    self._state = WaiterState.NAVIGATING_HOME
 
         # --- NAVIGATING_TO_TABLE: poll nav completion ---
         elif state == WaiterState.NAVIGATING_TO_TABLE:
@@ -528,6 +546,19 @@ class WaiterOrchestrator:
             self._dispatch_order_id = order_id
             self._dispatch_event.set()
             return {"ok": True, "table_id": table_id, "tray": tray, "order_id": order_id}
+
+    def handle_go_home(self) -> dict:
+        with self._lock:
+            if not self._nav2_ready:
+                return {"ok": False, "error": "Nav2 is not ready yet"}
+            if self._state != WaiterState.IDLE:
+                return {
+                    "ok": False,
+                    "error": f"Robot is busy ({self._state.value})",
+                    "current_table": self._current_table,
+                }
+            self._go_home_event.set()
+            return {"ok": True}
 
     def handle_order_complete(self, room_name: str, order_id: str) -> dict:
         with self._lock:

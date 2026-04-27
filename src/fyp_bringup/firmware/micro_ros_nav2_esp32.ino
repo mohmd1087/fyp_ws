@@ -523,13 +523,13 @@ void sync_time() {
 }
 
 // ===================== ESP-NOW link =====================
-void espnow_on_send(const wifi_tx_info_t* tx_info, esp_now_send_status_t status) {
+void espnow_on_send(const esp_now_send_info_t* tx_info, esp_now_send_status_t status) {
   (void)tx_info;
   espnow_last_send_ok = (status == ESP_NOW_SEND_SUCCESS);
   espnow_send_done    = true;
 }
 
-void espnow_on_recv(const esp_now_recv_info* info, const uint8_t* data, int len) {
+void espnow_on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
   (void)info;
   if (len != (int)sizeof(TrayPacket)) return;
   TrayPacket pkt;

@@ -24,11 +24,21 @@ ekf_filter_node:
     odom0_config: [false, false, false,   # x, y, z  (OFF — slip causes position drift during turns)
                    false, false, false,   # roll, pitch, yaw  (OFF — use velocities only)
                    true,  false, false,   # vx
-                   false, false, true,    # vyaw
+                   false, false, true,    # vyaw — encoder-derived yaw rate fused as backup to VO
                    false, false, false]   # ax, ay, az
-    odom0_differential: true             # treat as velocity-only, EKF integrates position itself
-    odom0_relative: true
+    odom0_differential: false            # firmware publishes twist directly — no need to differentiate pose
+    odom0_relative: false
     odom0_queue_size: 10
+    # Twist covariance: vx loose at 0.05 (encoder forward velocity is reliable);
+    # vyaw at 0.01 — looser than VO (0.0001) so VO dominates yaw rate by ~100x.
+    # Encoder vyaw is a backup if VO drops out (low texture, motion blur).
+    # Skid-steer slip inflates wheel-diff yaw error, hence the wide covariance.
+    odom0_twist_covariance_override: [0.05, 0.0,  0.0,  0.0,  0.0,  0.0,
+                                      0.0,  0.05, 0.0,  0.0,  0.0,  0.0,
+                                      0.0,  0.0,  0.05, 0.0,  0.0,  0.0,
+                                      0.0,  0.0,  0.0,  0.05, 0.0,  0.0,
+                                      0.0,  0.0,  0.0,  0.0,  0.05, 0.0,
+                                      0.0,  0.0,  0.0,  0.0,  0.0,  0.01]
 
     # ========================================
     # Visual Odometry Input (/vo/odometry)
@@ -37,30 +47,50 @@ ekf_filter_node:
     # Fuse vx and vyaw from visual odometry — complements wheel odom.
     # Use differential mode since VO pose drifts over time (only velocity is reliable).
     odom1: /vo/odometry
+    # Fuse VO yaw (pose) AND vyaw (twist). With differential: true, EKF treats
+    # absolute yaw as a delta from previous reading — safe even though VO pose
+    # drifts long-term. Combined with wheel-encoder vyaw (backup) this gives
+    # strong orientation tracking during rotations.
     odom1_config: [false, false, false,   # x, y, z
-                   false, false, false,   # roll, pitch, yaw
-                   true,  false, false,   # vx
-                   false, false, true,    # vyaw
+                   false, false, false,    # roll, pitch, yaw — VO yaw fused (differential)
+                   false, false, false,   # vx OFF — wheel encoders are sole source for forward velocity (VO sun-glitches caused phantom shifts during straight motion)
+                   false, false, true,    # vyaw — VO rotation rate fused
                    false, false, false]   # ax, ay, az
     odom1_differential: true
     odom1_relative: true
     odom1_queue_size: 10
+    # Twist covariance: vx (wheel-trustable) loose at 0.2; vyaw VERY tight (0.0001)
+    # so VO strongly dominates orientation rate during rotations. IMU gyro is much
+    # wider (0.05, set below) — VO wins decisively (~500x more trusted than IMU).
+    odom1_twist_covariance_override: [0.2,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                      0.0,  0.2,  0.0,  0.0,  0.0,  0.0,
+                                      0.0,  0.0,  0.2,  0.0,  0.0,  0.0,
+                                      0.0,  0.0,  0.0,  0.2,  0.0,  0.0,
+                                      0.0,  0.0,  0.0,  0.0,  0.2,  0.0,
+                                      0.0,  0.0,  0.0,  0.0,  0.0,  0.0001]
+    # Pose covariance: VO yaw (differential) very tight (0.001) so absolute
+    # orientation is strongly anchored to VO during rotations.
+    odom1_pose_covariance_override: [1.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                     0.0,  1.0,  0.0,  0.0,  0.0,  0.0,
+                                     0.0,  0.0,  1.0,  0.0,  0.0,  0.0,
+                                     0.0,  0.0,  0.0,  1.0,  0.0,  0.0,
+                                     0.0,  0.0,  0.0,  0.0,  1.0,  0.0,
+                                     0.0,  0.0,  0.0,  0.0,  0.0,  0.001]
 
     # ========================================
-    # IMU Input (/imu/data)
+    # IMU Input — DISABLED
     # ========================================
-    # MPU6050 on ESP32:
-    # - orientation_covariance[0] = -1  (NO absolute orientation)
-    # - angular_velocity (gyro) IS available and reliable
-    # Fuse gyro z (vyaw) — much better heading than wheel diff on skid-steer
+    # IMU removed from fusion. Yaw rate now comes from VO (primary) + wheel
+    # encoder vyaw (backup). All channels off below; topic stays subscribed
+    # but contributes nothing.
     imu0: /imu/data
-    imu0_config: [false, false, false,    # x, y, z
-                  false, false, false,    # roll, pitch, yaw
-                  false, false, false,    # vx, vy, vz
-                  false, false, false,    # vroll, vpitch, vyaw  (OFF — IMU hardware not working)
-                  false, false, false]    # ax, ay, az  (OFF — IMU hardware not working)
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, false]
     imu0_differential: false
-    imu0_relative: false
+    imu0_relative: true
     imu0_remove_gravitational_acceleration: true
     imu0_queue_size: 10
 

@@ -90,24 +90,7 @@ def _create_nav_nodes(context, *args, **kwargs):
         parameters=[params_file, {'use_sim_time': use_sim_time}],
         remappings=[
             ('cmd_vel', '/cmd_vel_nav'),
-            ('cmd_vel_smoothed', '/cmd_vel_smoothed'),
-        ],
-    )
-
-    obstacle_gate = Node(
-        package='fyp_bringup',
-        executable='obstacle_gate_node.py',
-        name='obstacle_gate',
-        output='screen',
-        parameters=[{
-            'stop_distance': 0.5,
-            'cone_angle': 0.524,
-            'use_sim_time': use_sim_time,
-        }],
-        remappings=[
-            ('cmd_vel_in', '/cmd_vel_smoothed'),
-            ('cmd_vel_out', '/cmd_vel'),
-            ('scan', '/scan'),
+            ('cmd_vel_smoothed', '/cmd_vel'),  # publish directly to robot — obstacle_gate removed
         ],
     )
 
@@ -181,7 +164,6 @@ def _create_nav_nodes(context, *args, **kwargs):
         bt_navigator,
         waypoint_follower,
         velocity_smoother,
-        obstacle_gate,
         lifecycle_manager,
     ]
 

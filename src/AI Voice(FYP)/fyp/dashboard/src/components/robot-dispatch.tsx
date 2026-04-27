@@ -76,6 +76,26 @@ export function RobotDispatch() {
     }
   }
 
+  async function goHome() {
+    setDispatching(true);
+    try {
+      const res = await fetch("/api/robot/home", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        toast.error(err.error ?? "Go home failed");
+      } else {
+        toast.success("Robot returning home");
+      }
+    } catch {
+      toast.error("Network error");
+    } finally {
+      setDispatching(false);
+    }
+  }
+
   async function dispatchWithTray(
     tableId: string,
     tray: number,
@@ -129,6 +149,14 @@ export function RobotDispatch() {
             {t}
           </Button>
         ))}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy || dispatching}
+          onClick={goHome}
+        >
+          Home
+        </Button>
       </div>
 
       {/* Tray dispatch buttons — each paired with a tray selector and an

@@ -2,16 +2,16 @@
 # yaw is in radians (0 = facing +X, 1.57 = facing +Y, 3.14 = facing -X)
 
 home:
-  x: -0.0733
-  y: -2.65
-  yaw: 0.047
+  x: 0.0674
+  y: 0.0084
+  yaw: 0.0
 
 tables:
   table-1:
-    x: 2.780
-    y: 0.060
-    yaw: 1.5708
+    x: 2.0884
+    y: 1.1200
+    yaw: 1.4478
   table-2:
-    x: 3.096
-    y: -3.744
-    yaw: 0.039
+    x: 1.9368
+    y: -1.4905
+    yaw: -1.6406

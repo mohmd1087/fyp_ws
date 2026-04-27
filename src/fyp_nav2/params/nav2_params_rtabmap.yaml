@@ -52,30 +52,45 @@ controller_server:
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: True
-      xy_goal_tolerance: 0.30      # looser so skid-steer slip during final rotation doesn't push robot out of tolerance
+      xy_goal_tolerance: 0.30
       yaw_goal_tolerance: 0.349    # ~20°
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.03
-      lookahead_dist: 1.2                  # far-ahead carrot → averages over grid zig-zags
-      min_lookahead_dist: 0.8
-      max_lookahead_dist: 1.5
+      desired_linear_vel: 0.18
+      # Long, stable lookahead = robot tracks the path's overall direction
+      # instead of chasing every small bend. Reduces useless mid-path turns.
+      # Shorter lookahead = carrot stays close so replans (around dynamic
+       # obstacles) don't swing the heading wildly and trigger constant
+       # rotate-to-heading flips.
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.4
+      max_lookahead_dist: 1.0
       lookahead_time: 2.0
-      rotate_to_heading_angular_vel: 0.3
-      rotate_to_heading_min_angle: 1.2     # ~69° — only rotate in place for large heading errors; blend drive+turn for path bends
+      rotate_to_heading_angular_vel: 0.50
+      # Raised from 0.4 → 0.785 (~45°) so small replan-induced heading
+      # changes blend into forward motion instead of triggering a stop-and-
+      # rotate. Eliminates the back-and-forth spin when re-routing around a
+      # moving person.
+      rotate_to_heading_min_angle: 0.785
       use_rotate_to_heading: true
       transform_tolerance: 0.2
+      # Velocity-scaled lookahead = at higher speeds, look further ahead.
+      # This prevents the carrot from staying too close during straight runs,
+      # which is what triggers oscillating heading corrections.
       use_velocity_scaled_lookahead_dist: true
-      min_approach_linear_velocity: 0.03
-      approach_velocity_scaling_dist: 0.6
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.5
       use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 6.0   # look 6s ahead — at 0.03 m/s that's 18cm pre-stop margin to absorb motor coast
+      max_allowed_time_to_collision_up_to_carrot: 6.0
       use_regulated_linear_velocity_scaling: true
-      use_cost_regulated_linear_velocity_scaling: true    # slow down approaching obstacles so the robot can actually stop
-      regulated_linear_scaling_min_radius: 1.2            # strongly prefer straight motion
-      regulated_linear_scaling_min_speed: 0.05
-      max_angular_accel: 0.25
+      use_cost_regulated_linear_velocity_scaling: true
+      # Regulated scaling only kicks in on truly tight curves now. Once RPP is
+      # in pure-pursuit mode (heading aligned), keep it cruising — no chopping
+      # speed for minor path waviness.
+      regulated_linear_scaling_min_radius: 0.5
+      regulated_linear_scaling_min_speed: 0.15
+      max_angular_accel: 1.0
       allow_reversing: false
       max_robot_pose_search_dist: 10.0
 
@@ -96,10 +111,10 @@ smoother_server:
     smoother_plugins: ["simple_smoother"]
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
-      tolerance: 1.0e-10
-      max_its: 5000
+      tolerance: 1.0e-4                    # was 1e-10 — converge to a smoother curve faster
+      max_its: 1000                        # was 5000 — plenty for this map size
       do_refinement: true
-      refinement_num: 5
+      refinement_num: 3
 
 behavior_server:
   ros__parameters:
@@ -122,9 +137,9 @@ behavior_server:
     robot_base_frame: base_footprint
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.2
-    min_rotational_vel: 0.05
-    rotational_acc_lim: 0.2
+    max_rotational_vel: 0.50
+    min_rotational_vel: 0.10
+    rotational_acc_lim: 0.5
 
 waypoint_follower:
   ros__parameters:
@@ -143,21 +158,24 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.10, 0.0, 0.5]
-    min_velocity: [-0.10, 0.0, -0.5]
-    max_accel: [0.05, 0.0, 0.25]
-    max_decel: [-0.05, 0.0, -0.25]
+    max_velocity: [0.18, 0.0, 0.55]
+    min_velocity: [-0.18, 0.0, -0.55]
+    # Smoother runs as near-passthrough — firmware S-curve owns actual ramping.
+    # Tight accel here causes double-ramping and seconds of idle delay before the
+    # robot moves after a goal is sent.
+    max_accel: [1.0, 0.0, 1.5]
+    max_decel: [-1.0, 0.0, -1.5]
     odom_topic: /odometry/filtered
     odom_duration: 0.1
-    deadband_velocity: [0.01, 0.0, 0.01]  # ignore tiny commands to prevent micro-jitter
+    deadband_velocity: [0.01, 0.0, 0.01]
     velocity_timeout: 1.0
 
 local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: false
-      update_frequency: 10.0
-      publish_frequency: 5.0
+      update_frequency: 15.0           # faster updates → dynamic obstacles register sooner
+      publish_frequency: 8.0
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
@@ -178,10 +196,15 @@ local_costmap:
         publish_voxel_map: False
         origin_z: 0.0
         z_resolution: 0.1
-        z_voxels: 8                 # 0 → 0.8m vertical range, matches min/max below
+        z_voxels: 8
         max_obstacle_height: 1.0
-        mark_threshold: 2           # require ≥2 voxels per column → sun flicker filtered out
-        unknown_threshold: 15
+        # Sun glare typically lights up scattered voxels that don't stack into a
+        # column. Real obstacles (walls, people, furniture) produce dense vertical
+        # stacks. Require ≥3 voxels in a column → strong sun-flicker rejection.
+        mark_threshold: 3
+        # Higher unknown_threshold = require MORE voxel evidence before declaring
+        # a column as "unknown" (which would otherwise block the planner).
+        unknown_threshold: 20
         observation_sources: pointcloud
         pointcloud:
           topic: /camera/depth/points
@@ -192,13 +215,22 @@ local_costmap:
           marking: True
           raytrace_max_range: 2.5
           raytrace_min_range: 0.1
-          obstacle_max_range: 1.5   # rejects long-range saturated-pixel phantoms
-          obstacle_min_range: 0.5   # rejects close-in saturated garbage
+          obstacle_max_range: 2.0       # was 1.5 — see further so dynamic obstacles register sooner
+          obstacle_min_range: 0.3       # was 0.5 — detect close obstacles (person walking up)
+          # Time-based decay so obstacles inside the camera blind zone (< ~0.3m)
+          # eventually clear: when something gets too close the depth camera
+          # returns no points for it, so raytracing can't clear the existing
+          # mark. 1s persistence lets the mark expire on a timer if no new
+          # observation reinforces it. Trade-off: real close obstacles flicker
+          # every 1s, but anything outside the blind zone is still cleared via
+          # raytracing the moment it's out of the way.
+          observation_persistence: 1.0
+          expected_update_rate: 0.5     # warn if pointcloud goes silent
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.40
+        cost_scaling_factor: 5.0          # steeper falloff = narrower soft-cost band
+        inflation_radius: 0.25            # was 0.40 — tight buffer around the 0.33m robot
 
       always_send_full_costmap: True
 
@@ -206,8 +238,8 @@ global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: false
-      update_frequency: 5.0
-      publish_frequency: 2.0
+      update_frequency: 10.0           # was 5.0 — faster updates so dynamic obstacles register on global map quickly enough for re-plan to route around
+      publish_frequency: 4.0
       global_frame: map
       robot_base_frame: base_footprint
       robot_radius: 0.30
@@ -239,7 +271,9 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 8.0
-        inflation_radius: 0.20
+        # Gentler falloff lets the planner take smoother arcs around obstacles
+        # rather than tight zig-zags driven by cost cliffs.
+        cost_scaling_factor: 2.5
+        inflation_radius: 0.30
 
       always_send_full_costmap: True
